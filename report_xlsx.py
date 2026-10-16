@@ -81,7 +81,7 @@ def write_report(path: Path, job: dict, items: list[dict]) -> None:
         ["납품 PNG 건수", len(delivered)],
         ["판단·검토 모델", "gpt-6-sol"],
         ["이미지 모델", "gpt-image-2"],
-        ["이미지 설정", "quality=low; size=1024x1024; PNG; 흰 배경"],
+        ["이미지 설정", "gpt-image-2 low, 1024x1024 생성 → 800x800 불투명 #FFFFFF PNG"],
         ["성공한 API 작업 수", sum(i["api_calls"] for i in items)],
         ["입력 토큰", sum(i["input_tokens"] for i in items)],
         ["출력 토큰", sum(i["output_tokens"] for i in items)],

@@ -31,7 +31,7 @@
     th { background: #f5efe8; position: sticky; top: 0; z-index: 1; white-space: nowrap; }
     td.word { font-weight: 700; min-width: 100px; }
     td.reason { min-width: 220px; max-width: 390px; line-height: 1.45; }
-    .thumb { width: 78px; height: 78px; object-fit: contain; background: white; border: 1px solid #eee; border-radius: 8px; }
+    .thumb { width: 78px; height: 78px; object-fit: contain; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
     .status { display: inline-block; border-radius: 100px; padding: 4px 8px; background: #eee; font-weight: 700; font-size: 12px; }
     .status.generated, .status.revised { background: #e2f1e7; color: #226344; }
     .status.skipped { background: #f3eddc; color: #715a22; }
@@ -46,7 +46,7 @@
   <section>
     <h2>CSV 업로드</h2>
     <div class="row"><input id="file" type="file" accept=".csv,text/csv" aria-label="단어 CSV"><button id="upload">작업 시작</button></div>
-    <p class="hint">필수 열: <code>word, meaning_ko</code> · UTF-8 CSV · 최대 1,000행 / 5MB · 납품 PNG는 원어 단어를 파일명으로 사용합니다.</p>
+    <p class="hint">필수 열: <code>word, meaning_ko</code> · UTF-8 CSV · 최대 1,000행 / 5MB · 납품 PNG는 800×800 순백색 배경이며 원어 단어를 파일명으로 사용합니다.</p>
     <p class="hint">이미지 API 호출에는 비용이 발생합니다. 작업 중 중단할 수 있으며, 현재 처리 중인 단어가 끝난 뒤 멈춥니다.</p>
     <div id="alert" class="alert" role="alert"></div>
     <div id="history" class="history"></div>

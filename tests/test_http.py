@@ -10,6 +10,8 @@ from unittest.mock import patch
 from zipfile import ZipFile
 from io import BytesIO
 
+from PIL import Image
+
 import app
 from test_workflow import FakeClient, TEST_TEMP
 
@@ -53,6 +55,10 @@ class HttpWorkflowTests(unittest.TestCase):
                     with urllib.request.urlopen(base + f"/api/jobs/{job_id}/images/%E9%A9%9A%E3%81%8F.png") as response:
                         self.assertEqual(response.status, 200)
                         self.assertIn("filename*=UTF-8''", response.headers["Content-Disposition"])
+                        with Image.open(BytesIO(response.read())) as delivered:
+                            self.assertEqual(delivered.size, (800, 800))
+                            self.assertEqual(delivered.mode, "RGB")
+                            self.assertEqual(delivered.getpixel((0, 0)), (255, 255, 255))
                 finally:
                     server.shutdown()
                     server.server_close()

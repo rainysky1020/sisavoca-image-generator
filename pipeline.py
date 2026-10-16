@@ -12,26 +12,46 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+from collections import deque
+from io import BytesIO
 from pathlib import Path
 from typing import Callable
+
+from PIL import Image, UnidentifiedImageError
 
 
 API_BASE = "https://api.openai.com/v1"
 TEXT_MODEL = "gpt-6-sol"
 IMAGE_MODEL = "gpt-image-2"
 IMAGE_SIZE = "1024x1024"
+DELIVERY_SIZE = (800, 800)
 STYLE_GUIDE = """The attached sheet is the publisher's authoritative illustration style reference.
-Use clean white background; rounded, compact, friendly silhouettes; flat opaque color fields;
-EVERY shape must use one uniform solid fill, including objects and small details. No gradients
-anywhere, no highlights, texture, shading, realistic lighting, thin anatomical detail, or
-decorative clutter. Crisp cut-paper/vector edges; no soft airbrush transitions.
-Palette: warm light tan body, medium brown accents, pale cream details, soft pink cheeks,
-black facial marks; other colors only when the target concept requires them. Bold, simple,
-readable composition at mobile size. If a squirrel appears, preserve the sheet's large ears,
-three dark forehead stripes, rounded eyes, pink cheeks, tiny black nose/mouth, round belly,
-and curled brown tail. Its hands and feet are featureless rounded shapes: absolutely no
-fingers, toes, claws, nails, or digit lines. If no squirrel is required, use only the sheet's
-visual grammar and never copy the squirrel or add a character.
+Draw the illustration isolated on PURE WHITE (#FFFFFF). The final delivered PNG must have an
+opaque, exact #FFFFFF background, not off-white, cream, gray, or transparency. No colored
+backdrop, floor, cast shadow, frame, or panel. Copy the sheet's compact rounded silhouettes,
+clean vector-like edges, very few shapes, and completely flat opaque color fields. Every shape,
+including the squirrel and every prop, uses one uniform solid fill. NO gradients on any surface,
+highlights, texture, shadows,
+realistic lighting, isometric rooms, perspective-heavy 3D scenes, tiny anatomical details,
+or decorative clutter.
+Make the overall illustration feel current and playful through bold scale, lively asymmetrical
+placement, generous white space, and one clear visual surprise that reinforces the mnemonic.
+Think contemporary mobile sticker/editorial illustration, not vintage storybook, sepia,
+watercolor, rustic craft, or nostalgic classroom clip art. Modernity comes from composition,
+NOT from restyling the squirrel or adding fashion, accessories, gradients, or extra detail.
+Keep the sheet's warm tan, medium brown, pale cream, soft pink, and black as the dominant
+palette. At most one crisp contemporary accent color may appear on a non-character object
+when it makes the meaning easier to remember. Do not recolor the squirrel. Do not combine several
+bright accent colors in one image.
+If a squirrel appears, reproduce the sheet's character design: same large rounded ears,
+three dark forehead stripes, big round eyes, pink oval cheeks, tiny black nose and mouth,
+simple rounded belly, curled brown tail, and compact proportions. Vary only its pose and
+expression as needed. It is the only character: no additional animal, mascot, human, face on
+an object, or anthropomorphic toy. Its arms end in single smooth mitten-like paws, and its feet are
+single smooth oval shapes. Hands and feet must have NO fingers, toes, claws, nails, splits,
+notches, or digit-separating lines, even when holding an object. A prop may touch or sit
+against a solid paw; never draw a gripping hand. If no squirrel is required, use the same
+flat, rounded visual grammar without copying or adding any character.
 """
 
 
@@ -120,9 +140,28 @@ PLAN_SCHEMA = {
 REVIEW_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {"decision": {"type": "string", "enum": ["keep", "revise"]},
-                   "issues": {"type": "string"}, "fix_instruction": {"type": "string"}},
-    "required": ["decision", "issues", "fix_instruction"],
+                   "issues": {"type": "string"}, "fix_instruction": {"type": "string"},
+                   "digit_issue": {"type": "string", "enum": ["none", "suspected", "visible"]},
+                   "character_mismatch": {"type": "boolean"},
+                   "extra_character": {"type": "boolean"},
+                   "style_issue": {"type": "string", "enum": ["none", "minor", "material"]}},
+    "required": ["decision", "issues", "fix_instruction", "digit_issue", "character_mismatch",
+                 "extra_character", "style_issue"],
 }
+
+
+def _blocking_issues(review: dict) -> str:
+    """Enforce character rules even if the reviewer otherwise chooses to keep."""
+    problems = []
+    if review["digit_issue"] != "none":
+        problems.append("다람쥐 손·발에 손가락·발가락처럼 분리된 형태가 보이거나 의심됨")
+    if review["character_mismatch"]:
+        problems.append("다람쥐 캐릭터 시트와 핵심 형태가 다름")
+    if review["extra_character"]:
+        problems.append("다람쥐 외에 불필요한 얼굴 있는 캐릭터가 추가됨")
+    if review["style_issue"] == "material":
+        problems.append("입체 명암·그라데이션 또는 복고풍이 화풍을 크게 벗어남")
+    return "; ".join(problems)
 
 
 def _text(result: dict) -> dict:
@@ -148,8 +187,58 @@ def _image(result: dict) -> bytes:
         raise APIError("이미지 응답이 PNG가 아닙니다.")
     width, height = struct.unpack(">II", image[16:24])
     if (width, height) != (1024, 1024):
-        raise APIError(f"이미지 크기가 1024×1024가 아닙니다: {width}×{height}")
-    return image
+        raise APIError(f"API 이미지 크기가 1024×1024가 아닙니다: {width}×{height}")
+    try:
+        with Image.open(BytesIO(image)) as source:
+            source.load()
+            if source.format != "PNG":
+                raise APIError("이미지 응답이 PNG가 아닙니다.")
+            return _make_delivery_png(source.convert("RGB"))
+    except (OSError, UnidentifiedImageError) as exc:
+        raise APIError("PNG 픽셀 데이터를 읽을 수 없습니다.") from exc
+
+
+def _make_delivery_png(source: Image.Image) -> bytes:
+    """Resize and make only the edge-connected near-white background exact white."""
+    delivered = source.convert("RGB").resize(DELIVERY_SIZE, Image.Resampling.LANCZOS)
+    width, height = delivered.size
+    rgb = bytearray(delivered.tobytes())
+    seen = bytearray(width * height)
+    queue = deque()
+
+    def add(index: int) -> None:
+        if seen[index]:
+            return
+        seen[index] = 1
+        offset = index * 3
+        if min(rgb[offset:offset + 3]) >= 245:
+            rgb[offset:offset + 3] = b"\xff\xff\xff"
+            queue.append(index)
+
+    for x in range(width):
+        add(x)
+        add((height - 1) * width + x)
+    for y in range(height):
+        add(y * width)
+        add(y * width + width - 1)
+    while queue:
+        index = queue.popleft()
+        x, y = index % width, index // width
+        if x:
+            add(index - 1)
+        if x + 1 < width:
+            add(index + 1)
+        if y:
+            add(index - width)
+        if y + 1 < height:
+            add(index + width)
+    delivered = Image.frombytes("RGB", DELIVERY_SIZE, bytes(rgb))
+    if not any(delivered.getpixel(point) == (255, 255, 255) for point in
+               ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))):
+        raise APIError("순백색 배경을 확인할 수 없어 PNG를 납품하지 않습니다.")
+    output = BytesIO()
+    delivered.save(output, format="PNG")
+    return output.getvalue()
 
 
 def _usage(result: dict) -> dict[str, int]:
@@ -214,15 +303,19 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
         return item
     item["status"] = "generating"
     save(item)
-    character = ("Include exactly one squirrel character matching the reference sheet."
+    character = ("Include exactly one squirrel character matching the reference sheet. "
+                 "No other faces, animals, mascots, or anthropomorphic objects."
                  if plan["use_squirrel"] else "No squirrel, no animals, no anthropomorphic actor.")
     text_rule = (f"Only visible text allowed: {permitted_text}. Keep it exact and minimal."
                  if permitted_text else
                  "No letters, words, numbers, captions, speech bubbles, or watermarks.")
-    image_prompt = (f"Create a standalone 1024x1024 vocabulary illustration.\n{STYLE_GUIDE}\n"
+    image_prompt = (f"Create a standalone vocabulary illustration on an exact pure white canvas.\n"
+                    f"{STYLE_GUIDE}\n"
                     f"{character}\n{text_rule}\nScene: {plan['scene']}\n"
                     f"Mnemonic cue: {plan['memory_cue']}\nTarget meaning: {item['meaning_ko']}. "
-                    "One instantly readable central idea. Solid pure white background, no frame.")
+                    "One instantly readable central idea. Simplify any room or setting to a few flat "
+                    "graphic props; avoid a rendered environment. Leave clear PURE WHITE (#FFFFFF) "
+                    "margins; no off-white background, floor, shadow, or frame.")
     result = client.edit_image(image_prompt, [(sheet_path.name, reference)])
     _add_usage(item, result)
     image = _image(result)
@@ -231,14 +324,31 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
     review_prompt = ("You are selecting usable vocabulary illustrations for publication. "
                      "Favor keeping an image when its Korean meaning is recognizable at mobile size "
                      "and it serves as a useful memory cue. Assess the reference sheet's overall "
-                     "friendly, rounded, flat style, but treat small palette differences, slight "
-                     "gradients, minor texture or imperfect resemblance as non-blocking. "
+                     "friendly, rounded, flat style and current playful graphic composition. "
+                     "Treat small palette differences, a tiny local gradient, minor texture, or a minor "
+                     "compositional imperfection as non-blocking. "
                      "Choose 'keep' for a usable image even when you mention minor issues. "
                      "Choose 'revise' only for a material problem: wrong or misleading meaning, "
-                     "illegible central idea, an unwanted squirrel, significant style mismatch, "
-                     "unwanted prominent text, or squirrel fingers, toes, claws, nails, or digit lines. "
-                     "Do not fail solely because you are uncertain about a tiny artistic detail. "
-                     "Give a concise reason and, only when revision is necessary, a specific fix.\n" +
+                     "illegible central idea, an unwanted squirrel, vintage/3D rendering that "
+                     "materially breaks the sheet's style, unwanted prominent text, or a changed "
+                     "squirrel design. Set style_issue to 'material' when central shapes show obvious "
+                     "3D shading or broad gradients, the scene looks vintage, or several bright "
+                     "accent colors overwhelm the reference palette; use 'minor' only for tiny "
+                     "local deviations. Set extra_character when another animal, mascot, human, "
+                     "or face on a toy or object appears. Inspect EVERY visible squirrel paw and "
+                     "foot closely, including "
+                     "ones touching props: set digit_issue to 'visible' for fingers, toes, claws, "
+                     "nails, splits, notches, or digit-separating lines, 'suspected' for ambiguous "
+                     "digit-like marks, and 'none' only when no digit-like mark is visible. "
+                     "A paw hidden behind an object is not by itself suspicious. Set "
+                     "character_mismatch when core features or proportions differ materially from "
+                     "the reference sheet. A non-none digit_issue, character_mismatch, "
+                     "extra_character, or material style_issue requires "
+                     "revision even if the mnemonic is otherwise useful. The output PNG must show "
+                     "the illustration on an opaque, pure white (#FFFFFF) background without a "
+                     "colored panel or gradient backdrop. "
+                     "Give a concise reason and, "
+                     "only when revision is necessary, a specific fix.\n" +
                      _context(item) + f"\nPlanned scene: {plan['scene']}\nSquirrel allowed: "
                      f"{plan['use_squirrel']}\nVisible text allowed: {text_rule}")
     result = client.response(review_prompt + "\nImage 1 is the reference sheet; image 2 is the draft to judge.",
@@ -246,18 +356,23 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                              [(sheet_path.name, reference), ("draft.png", image)])
     _add_usage(item, result)
     review = _text(result)
-    item["review_notes"] = review["issues"]
-    if review["decision"] == "keep":
+    blocking = _blocking_issues(review)
+    item["review_notes"] = "; ".join(filter(None, [review["issues"], blocking]))
+    if review["decision"] == "keep" and not blocking:
         item.update(status="generated", final_reason="사용 가능 판정" +
                     (f" (경미한 참고 사항: {review['issues']})" if review["issues"] else ""))
     else:
         item["status"] = "revising"
         save(item)
-        fix_prompt = (f"Revise the second input image to fix this material issue: {review['issues']}. "
+        fix_prompt = (f"Revise the second input image to fix this material issue: "
+                      f"{item['review_notes'] or 'material review failure'}. "
                       f"{review['fix_instruction']} Preserve the intended scene and vocabulary meaning. "
                       f"The first input is the authoritative style sheet. {STYLE_GUIDE} "
-                      f"Focus on the material issue instead of cosmetic restyling. {character} {text_rule} "
-                      "Pure white background, 1024x1024 PNG.")
+                      f"Focus on the material issue instead of cosmetic restyling. If paws or feet "
+                      f"are involved, redraw them as unbroken solid shapes without digits. "
+                      f"{character} {text_rule} "
+                      "Pure white (#FFFFFF) opaque background with clear margins. The application "
+                      "will export the final image as an 800x800 PNG.")
         result = client.edit_image(fix_prompt, [(sheet_path.name, reference), ("draft.png", image)])
         _add_usage(item, result)
         item["revision_count"] = 1
@@ -269,11 +384,13 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                                 [(sheet_path.name, reference), ("revised.png", image)])
         _add_usage(item, final)
         judgment = _text(final)
-        if judgment["decision"] == "keep":
+        final_blocking = _blocking_issues(judgment)
+        if judgment["decision"] == "keep" and not final_blocking:
             item.update(status="revised", final_reason="1회 수정 후 사용 가능 판정" +
                         (f" (경미한 참고 사항: {judgment['issues']})" if judgment["issues"] else ""))
         else:
-            item.update(status="discarded", final_reason=judgment["issues"] or "최종 검토 기준 미달")
+            item.update(status="discarded", final_reason="; ".join(filter(None, [judgment["issues"], final_blocking]))
+                        or "최종 검토 기준 미달")
             save(item)
             return item
     filename = image_filename(item["word"], output_dir)
