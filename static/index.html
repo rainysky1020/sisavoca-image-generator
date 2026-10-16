@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>시사보카 연상 삽화 제작기</title>
+  <style>
+    :root { font-family: system-ui, "Malgun Gothic", sans-serif; color: #382b20; background: #f7f3ed; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { background: #fff; border-bottom: 1px solid #eadfd0; padding: 23px max(24px, calc((100vw - 1160px)/2)); }
+    h1 { font-size: 25px; margin: 0 0 5px; } h2 { font-size: 19px; margin: 0 0 14px; }
+    p { margin: 0; line-height: 1.55; color: #685c50; }
+    main { max-width: 1208px; padding: 24px; margin: auto; }
+    section { background: #fff; border: 1px solid #eadfd0; border-radius: 16px; padding: 22px; margin-bottom: 18px; box-shadow: 0 5px 22px #70502b0a; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    input[type=file] { flex: 1; min-width: 220px; padding: 11px; border: 1px dashed #bda98f; border-radius: 9px; }
+    button, .button { appearance: none; border: 0; border-radius: 9px; padding: 11px 16px; background: #765032; color: white; font: inherit; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; }
+    button.secondary, .button.secondary { background: #ede3d7; color: #513a25; }
+    button:disabled { opacity: .48; cursor: default; }
+    .hint { font-size: 13px; margin-top: 9px; }
+    .alert { color: #a52b23; margin-top: 12px; min-height: 1.3em; }
+    .hidden { display: none; }
+    .metrics { display: flex; flex-wrap: wrap; gap: 8px; margin: 15px 0; }
+    .metric { padding: 10px 13px; border-radius: 9px; background: #f4eee6; min-width: 95px; }
+    .metric b { display: block; font-size: 21px; }
+    .metric span { color: #74685b; font-size: 12px; }
+    .table-wrap { overflow: auto; max-height: 600px; }
+    table { border-collapse: collapse; width: 100%; min-width: 900px; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee7df; vertical-align: top; font-size: 13px; }
+    th { background: #f5efe8; position: sticky; top: 0; z-index: 1; white-space: nowrap; }
+    td.word { font-weight: 700; min-width: 100px; }
+    td.reason { min-width: 220px; max-width: 390px; line-height: 1.45; }
+    .thumb { width: 78px; height: 78px; object-fit: contain; background: white; border: 1px solid #eee; border-radius: 8px; }
+    .status { display: inline-block; border-radius: 100px; padding: 4px 8px; background: #eee; font-weight: 700; font-size: 12px; }
+    .status.generated, .status.revised { background: #e2f1e7; color: #226344; }
+    .status.skipped { background: #f3eddc; color: #715a22; }
+    .status.discarded, .status.error { background: #fce4e1; color: #9c3026; }
+    .history { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .history button { font-size: 12px; font-weight: 500; }
+  </style>
+</head>
+<body>
+<header><h1>시사보카 연상 삽화 제작기</h1><p>단어의 뜻을 기억하는 데 도움이 되는 삽화만 만들고, 작업 결과를 엑셀로 기록합니다.</p></header>
+<main>
+  <section>
+    <h2>CSV 업로드</h2>
+    <div class="row"><input id="file" type="file" accept=".csv,text/csv" aria-label="단어 CSV"><button id="upload">작업 시작</button></div>
+    <p class="hint">필수 열: <code>word, meaning_ko</code> · UTF-8 CSV · 최대 1,000행 / 5MB · 납품 PNG는 원어 단어를 파일명으로 사용합니다.</p>
+    <p class="hint">이미지 API 호출에는 비용이 발생합니다. 작업 중 중단할 수 있으며, 현재 처리 중인 단어가 끝난 뒤 멈춥니다.</p>
+    <div id="alert" class="alert" role="alert"></div>
+    <div id="history" class="history"></div>
+  </section>
+  <section id="results" class="hidden">
+    <div class="row" style="justify-content:space-between"><div><h2 id="jobTitle">작업 결과</h2><p id="jobMeta"></p></div>
+      <div class="row"><button id="stop" class="secondary hidden">중단</button><button id="resume" class="secondary hidden">재개</button><a id="imagesZip" class="button secondary" href="#" download>납품 PNG 묶음</a><a id="report" class="button" href="#" download>엑셀 작업보고서</a></div>
+    </div>
+    <div id="metrics" class="metrics"></div>
+    <div class="table-wrap"><table><thead><tr><th>행</th><th>원어 단어</th><th>한국어 뜻</th><th>상태</th><th>판단·검토 결과</th><th>삽화</th></tr></thead><tbody id="tbody"></tbody></table></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let selectedJob = null;
+let timer = null;
+const labels = { queued:'대기', planning:'제작 판단', generating:'이미지 생성', reviewing:'자동 검토', revising:'1회 수정', generated:'생성', revised:'수정 후 납품', skipped:'생략', discarded:'폐기', error:'오류', running:'진행 중', stopped:'중단됨', stop_requested:'중단 요청', completed:'완료' };
+function node(tag, text, className) { const el=document.createElement(tag); el.textContent=text ?? ''; if(className)el.className=className; return el; }
+function alertMessage(message) { $('alert').textContent = message || ''; }
+async function api(url, options) { const response=await fetch(url, options); const data=await response.json(); if(!response.ok)throw Error(data.error || '요청 실패'); return data; }
+async function upload() {
+  const file=$('file').files[0]; if(!file)return alertMessage('CSV 파일을 선택하세요.');
+  $('upload').disabled=true; alertMessage('CSV를 확인하고 있습니다.');
+  try { const data=await api('/api/jobs', {method:'POST', headers:{'Content-Type':'text/csv','X-Filename':file.name}, body:file}); selectedJob=data.job_id; alertMessage(''); await refresh(); await history(); }
+  catch(error) { alertMessage(error.message); }
+  finally { $('upload').disabled=false; }
+}
+async function history() {
+  try { const jobs=await api('/api/jobs'); $('history').replaceChildren();
+    jobs.forEach(job=> { const button=node('button', `${job.created_at} · ${labels[job.status]||job.status}`, 'secondary'); button.onclick=()=>{selectedJob=job.id;refresh();}; $('history').append(button); });
+  } catch(error) { alertMessage(error.message); }
+}
+function render(data) {
+  const {job,items}=data; $('results').classList.remove('hidden');
+  $('jobTitle').textContent=`작업 ${job.id}`; $('jobMeta').textContent=`${job.original_name} · ${labels[job.status]||job.status} · 최근 갱신 ${job.updated_at}`;
+  $('report').href=`/api/jobs/${job.id}/report`;
+  $('imagesZip').href=`/api/jobs/${job.id}/images.zip`;
+  $('stop').classList.toggle('hidden', job.status!=='running');
+  $('resume').classList.toggle('hidden', !['stopped','queued'].includes(job.status));
+  const counts={}; items.forEach(item=>counts[item.status]=(counts[item.status]||0)+1);
+  const metrics=[['입력',items.length],['납품',(counts.generated||0)+(counts.revised||0)],['생성',counts.generated||0],['수정',counts.revised||0],['생략',counts.skipped||0],['폐기',counts.discarded||0],['오류',counts.error||0]];
+  $('metrics').replaceChildren(...metrics.map(([label,count])=>{const box=node('div','','metric');box.append(node('b',count),node('span',label));return box;}));
+  $('tbody').replaceChildren();
+  items.forEach(item=>{
+    const tr=node('tr'); tr.append(node('td',item.row_number),node('td',item.word,'word'),node('td',item.meaning_ko));
+    const status=node('td'); status.append(node('span',labels[item.status]||item.status,`status ${item.status}`)); tr.append(status);
+    tr.append(node('td',item.final_reason || item.review_notes || item.decision_reason || item.scene,'reason'));
+    const imageCell=node('td'); if(item.image_file){const link=node('a');link.href=`/api/jobs/${job.id}/images/${encodeURIComponent(item.image_file)}`;link.download=item.image_file;const img=node('img','','thumb');img.src=link.href;img.alt=`${item.word} 삽화`;link.append(img);imageCell.append(link);} tr.append(imageCell); $('tbody').append(tr);
+  });
+}
+async function refresh() {
+  if(!selectedJob)return; try { const data=await api(`/api/jobs/${selectedJob}`);render(data);
+    clearTimeout(timer); if(['queued','running','stop_requested'].includes(data.job.status))timer=setTimeout(refresh,2500);
+  } catch(error) { alertMessage(error.message); }
+}
+async function action(kind) { if(!selectedJob)return; try{await api(`/api/jobs/${selectedJob}/${kind}`,{method:'POST'});await refresh();}catch(error){alertMessage(error.message);} }
+$('upload').onclick=upload; $('stop').onclick=()=>action('stop'); $('resume').onclick=()=>action('resume'); history();
+</script>
+</body>
+</html>

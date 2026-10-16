@@ -1,0 +1,1 @@
+# Python 3.11+; the application uses only the standard library.

@@ -1,0 +1,8 @@
+.env
+voca*.csv
+voca*.xlsx
+__pycache__/
+*.pyc
+output/
+*.db
+*.db-*
