@@ -87,6 +87,7 @@ def parse_csv(data: bytes) -> list[dict]:
             problems.append("셀 길이 2000자 초과")
         item.update(row_number=number, status="error" if problems else "queued", decision_reason="", scene="",
                     memory_cue="", use_squirrel="", use_text="", review_notes="",
+                    selected_version="",
                     revision_count=0, final_reason="; ".join(problems), image_file="",
                     api_calls=0, input_tokens=0, output_tokens=0, image_tokens=0)
         rows.append(item)

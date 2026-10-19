@@ -14,6 +14,7 @@ DETAIL_COLUMNS = [
     ("연상 장면", "scene"), ("기억 단서", "memory_cue"),
     ("다람쥐 등장", "use_squirrel"), ("문자 사용", "use_text"),
     ("검토 지적 사항", "review_notes"), ("수정 횟수", "revision_count"),
+    ("선택한 그림", "selected_version"),
     ("최종 판정·실패 사유", "final_reason"), ("납품 파일", "image_file"),
     ("API 호출 수", "api_calls"), ("입력 토큰", "input_tokens"),
     ("출력 토큰", "output_tokens"), ("이미지 토큰", "image_tokens"),
@@ -72,10 +73,11 @@ def write_report(path: Path, job: dict, items: list[dict]) -> None:
         ["최근 갱신", job.get("updated_at", "")],
         ["작업 상태", job["status"]],
         ["입력 건수", len(items)],
-        ["생성 건수", counts["generated"]],
-        ["수정 후 납품 건수", counts["revised"]],
+        ["원본 선택 건수", counts["generated"]],
+        ["수정본 선택 건수", counts["revised"]],
+        ["수정 시도 건수", sum(bool(i.get("revision_count")) for i in items)],
         ["생략 건수", counts["skipped"]],
-        ["폐기 건수", counts["discarded"]],
+        ["이전 작업 폐기 건수", counts["discarded"]],
         ["오류 건수", counts["error"]],
         ["미완료 건수", sum(counts[s] for s in ("queued", "planning", "generating", "reviewing", "revising"))],
         ["납품 PNG 건수", len(delivered)],
@@ -125,5 +127,5 @@ def write_report(path: Path, job: dict, items: list[dict]) -> None:
 <cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="1" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"/></cellXfs>
 </styleSheet>''')
         out.writestr("xl/worksheets/sheet1.xml", _sheet(summary, [31, 100], False, False))
-        out.writestr("xl/worksheets/sheet2.xml", _sheet(detail, [8, 26, 28, 13, 52, 52, 40, 14, 12, 55, 11, 55, 28, 12, 13, 13, 13], True, True))
+        out.writestr("xl/worksheets/sheet2.xml", _sheet(detail, [8, 26, 28, 13, 52, 52, 40, 14, 12, 55, 11, 14, 55, 28, 12, 13, 13, 13], True, True))
     tmp.replace(path)

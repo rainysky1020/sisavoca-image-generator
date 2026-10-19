@@ -156,6 +156,12 @@ REVIEW_SCHEMA = {
     "required": ["decision", "issues", "fix_instruction", "digit_issue", "character_mismatch",
                  "extra_character", "style_issue"],
 }
+SELECTION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"chosen_image": {"type": "string", "enum": ["original", "revised"]},
+                   "reason": {"type": "string"}, "remaining_issues": {"type": "string"}},
+    "required": ["chosen_image", "reason", "remaining_issues"],
+}
 
 
 def _blocking_issues(review: dict) -> str:
@@ -292,9 +298,12 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
     reference = sheet_path.read_bytes()
     item["status"] = "planning"
     save(item)
-    prompt = ("You are an expert vocabulary editor. Decide if ONE memorable, unambiguous image "
-              "will materially help recall the specified Korean meaning. Skip if illustration "
-              "would be generic, misleading, or merely decorative. Never infer another sense. "
+    prompt = ("You are an expert vocabulary editor. BEFORE any image is made, design one "
+              "concrete scene and decide whether it can help recall the specified Korean meaning. "
+              "Skip when no faithful, memorable visual scene can be designed, or when any simple "
+              "scene would be generic, misleading, or merely decorative. Never infer another sense. "
+              "If you choose to draw, the app will deliver one generated candidate after review, "
+              "so make the scene and mnemonic cue specific enough at this planning stage. "
               "Use a squirrel only when a visible actor, action, expression, or emotion is needed; "
               "otherwise use objects or symbols with no animal. Prefer no letters or numbers; "
               "permit only if essential to the mnemonic. Return a concrete simple scene.\n" + _context(item))
@@ -327,7 +336,7 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     "margins; no off-white background, floor, shadow, or frame.")
     result = client.edit_image(image_prompt, [(sheet_path.name, reference)])
     _add_usage(item, result)
-    image = _image(result)
+    original = _image(result)
     item["status"] = "reviewing"
     save(item)
     review_prompt = ("You are selecting usable vocabulary illustrations for publication. "
@@ -367,52 +376,80 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "only when revision is necessary, a specific fix.\n" +
                      _context(item) + f"\nPlanned scene: {plan['scene']}\nSquirrel allowed: "
                      f"{plan['use_squirrel']}\nVisible text allowed: {text_rule}")
-    result = client.response(review_prompt + "\nImage 1 is the reference sheet; image 2 is the draft to judge.",
-                             "vocabulary_image_review", REVIEW_SCHEMA,
-                             [(sheet_path.name, reference), ("draft.png", image)])
-    _add_usage(item, result)
-    review = _text(result)
-    blocking = _blocking_issues(review)
-    item["review_notes"] = "; ".join(filter(None, [review["issues"], blocking]))
-    if review["decision"] == "keep" and not blocking:
-        item.update(status="generated", final_reason="사용 가능 판정" +
-                    (f" (경미한 참고 사항: {review['issues']})" if review["issues"] else ""))
-    else:
-        item["status"] = "revising"
-        save(item)
-        fix_prompt = (f"Revise the second input image to fix this material issue: "
-                      f"{item['review_notes'] or 'material review failure'}. "
-                      f"{review['fix_instruction']} Preserve the intended scene and vocabulary meaning. "
-                      f"The first input is the authoritative style sheet. {STYLE_GUIDE} "
-                      f"Focus on the material issue instead of cosmetic restyling. If paws or feet "
-                      f"are involved, redraw arms as short curved strokes with no separate hands "
-                      f"and feet as two small unbroken brown ovals without digits. "
-                      f"{character} {text_rule} "
-                      "Pure white (#FFFFFF) opaque background with clear margins. The application "
-                      "will export the final image as an 800x800 PNG.")
-        result = client.edit_image(fix_prompt, [(sheet_path.name, reference), ("draft.png", image)])
+    selected = original
+    item["selected_version"] = "원본"
+    try:
+        result = client.response(review_prompt + "\nImage 1 is the reference sheet; image 2 is the draft to judge.",
+                                 "vocabulary_image_review", REVIEW_SCHEMA,
+                                 [(sheet_path.name, reference), ("draft.png", original)])
         _add_usage(item, result)
-        item["revision_count"] = 1
-        image = _image(result)
-        item["status"] = "reviewing"
-        save(item)
-        final = client.response(review_prompt + "\nImage 1 is the reference sheet; image 2 is the single revised version to judge. No further edits are allowed.",
-                                "vocabulary_image_final_review", REVIEW_SCHEMA,
-                                [(sheet_path.name, reference), ("revised.png", image)])
-        _add_usage(item, final)
-        judgment = _text(final)
-        final_blocking = _blocking_issues(judgment)
-        if judgment["decision"] == "keep" and not final_blocking:
-            item.update(status="revised", final_reason="1회 수정 후 사용 가능 판정" +
-                        (f" (경미한 참고 사항: {judgment['issues']})" if judgment["issues"] else ""))
+        review = _text(result)
+        blocking = _blocking_issues(review)
+    except (APIError, ValueError, KeyError, TypeError):
+        item.update(status="generated", review_notes="자동 검토 실패",
+                    final_reason="자동 검토를 완료하지 못해 생성 원본을 납품함")
+    else:
+        item["review_notes"] = "; ".join(filter(None, [review["issues"], blocking]))
+        if review["decision"] == "keep" and not blocking:
+            item.update(status="generated", final_reason="검토 후 생성 원본 선택" +
+                        (f" (참고: {review['issues']})" if review["issues"] else ""))
         else:
-            item.update(status="discarded", final_reason="; ".join(filter(None, [judgment["issues"], final_blocking]))
-                        or "최종 검토 기준 미달")
+            item["status"] = "revising"
             save(item)
-            return item
+            fix_prompt = (f"Revise the second input image to fix this material issue: "
+                          f"{item['review_notes'] or 'material review failure'}. "
+                          f"{review['fix_instruction']} Preserve the intended scene and vocabulary meaning. "
+                          f"The first input is the authoritative style sheet. {STYLE_GUIDE} "
+                          f"Focus on the material issue instead of cosmetic restyling. If paws or feet "
+                          f"are involved, redraw arms as short curved strokes with no separate hands "
+                          f"and feet as two small unbroken brown ovals without digits. "
+                          f"{character} {text_rule} "
+                          "Pure white (#FFFFFF) opaque background with clear margins. The application "
+                          "will export the final image as an 800x800 PNG.")
+            item["revision_count"] = 1
+            try:
+                result = client.edit_image(fix_prompt, [(sheet_path.name, reference), ("draft.png", original)])
+                _add_usage(item, result)
+                revised = _image(result)
+            except (APIError, ValueError, KeyError, TypeError):
+                item.update(status="generated", final_reason="수정본 생성에 실패해 원본을 납품함")
+                item["review_notes"] += "; 수정본 생성 실패"
+            else:
+                item["status"] = "reviewing"
+                save(item)
+                selection_prompt = (
+                    "Choose exactly ONE of the two completed vocabulary illustrations for delivery. "
+                    "Image 1 is the authoritative squirrel style sheet; image 2 is ORIGINAL; "
+                    "image 3 is REVISED. Compare images 2 and 3 for the specified Korean meaning "
+                    "and memory cue FIRST, then character consistency, fingerless limbs, text and "
+                    "visual clarity. Choose the more useful image even if neither is perfect. "
+                    "Do not discard, reject, or request another revision. State the selected image, "
+                    "a concise reason and any remaining issues for the editor.\n" + _context(item) +
+                    f"\nPlanned scene: {plan['scene']}\nMemory cue: {plan['memory_cue']}\n"
+                    f"Initial review notes: {item['review_notes']}")
+                try:
+                    result = client.response(selection_prompt, "vocabulary_image_selection", SELECTION_SCHEMA,
+                                             [(sheet_path.name, reference), ("original.png", original),
+                                              ("revised.png", revised)])
+                    _add_usage(item, result)
+                    choice = _text(result)
+                    chosen = choice["chosen_image"]
+                    if chosen not in ("original", "revised"):
+                        raise ValueError("비교 결과의 선택본이 올바르지 않습니다.")
+                except (APIError, ValueError, KeyError, TypeError):
+                    item.update(status="generated", final_reason="원본·수정본 비교에 실패해 원본을 납품함")
+                    item["review_notes"] += "; 최종 비교 실패"
+                else:
+                    selected = revised if chosen == "revised" else original
+                    item["selected_version"] = "수정본" if chosen == "revised" else "원본"
+                    item["status"] = "revised" if chosen == "revised" else "generated"
+                    item["final_reason"] = (f"원본·수정본 비교 후 {item['selected_version']} 선택: "
+                                            f"{choice['reason']}")
+                    if choice["remaining_issues"]:
+                        item["review_notes"] += "; 선택본 참고 사항: " + choice["remaining_issues"]
     filename = image_filename(item["word"], output_dir)
     path = output_dir / filename
-    path.write_bytes(image)
+    path.write_bytes(selected)
     item["image_file"] = filename
     save(item)
     return item

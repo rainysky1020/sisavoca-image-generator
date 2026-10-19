@@ -16,10 +16,10 @@ TEST_TEMP = Path(__file__).resolve().parents[1] / "output" / "test_tmp"
 TEST_TEMP.mkdir(parents=True, exist_ok=True)
 
 
-def png(width=1024, height=1024, background=(253, 254, 252)):
+def png(width=1024, height=1024, background=(253, 254, 252), foreground="#bf815a"):
     image = Image.new("RGB", (width, height), background)
     draw = ImageDraw.Draw(image)
-    draw.rectangle((width // 4, height // 4, width * 3 // 4, height * 3 // 4), fill="#bf815a")
+    draw.rectangle((width // 4, height // 4, width * 3 // 4, height * 3 // 4), fill=foreground)
     draw.ellipse((width // 2 - 30, height // 2 - 30, width // 2 + 30, height // 2 + 30), fill="white")
     output = BytesIO()
     image.save(output, format="PNG")
@@ -39,7 +39,15 @@ class FakeClient:
                        "scene": "문 앞에서 망설이는 모습", "memory_cue": "멈춘 동작",
                        "use_squirrel": self.mode not in ("object", "text"),
                        "use_text": self.mode == "text", "allowed_text": "A" if self.mode == "text" else ""}
+        elif schema_name == "vocabulary_image_selection":
+            if self.mode == "selection_error":
+                raise APIError("comparison unavailable")
+            content = {"chosen_image": "original" if self.mode == "choose_original" else "revised",
+                       "reason": "뜻을 더 잘 기억할 수 있음", "remaining_issues": "손 모양 참고" if self.mode == "discard" else ""}
+            self.selection_images = [name for name, _ in images]
         else:
+            if self.mode == "review_error":
+                raise APIError("review unavailable")
             self.reviews += 1
             passing = self.mode in ("pass", "minor", "object", "text", "digit_override",
                                     "digit_persist", "character_override", "style_override",
@@ -59,7 +67,10 @@ class FakeClient:
         import base64
         self.edits += 1
         self.image_prompts.append(prompt)
-        return {"data": [{"b64_json": base64.b64encode(png()).decode()}],
+        if self.mode == "revision_error" and self.edits == 2:
+            raise APIError("revision unavailable")
+        foreground = "#643e9c" if self.edits == 2 else "#bf815a"
+        return {"data": [{"b64_json": base64.b64encode(png(foreground=foreground)).decode()}],
                 "usage": {"input_tokens": 4, "output_tokens": 10}}
 
 
@@ -83,26 +94,33 @@ class WorkflowTests(unittest.TestCase):
             sheet = root / "sheet.jpg"
             sheet.write_bytes(b"fake reference")
             result = process_item(item, client, sheet, root, lambda _: None)
-            self.assertEqual(client.edits, {"skip": 0, "pass": 1, "minor": 1, "fix": 2,
-                                            "discard": 2, "digit_override": 2,
-                                            "digit_persist": 2, "character_override": 2,
-                                            "style_override": 2, "extra_character_override": 2}[mode])
+            self.assertEqual(client.edits, 0 if mode == "skip" else
+                             (1 if mode in ("pass", "minor", "review_error") else 2))
             self.assertEqual(result["status"], {"skip": "skipped", "pass": "generated",
-                                                "minor": "generated", "fix": "revised", "discard": "discarded",
-                                                "digit_override": "revised", "digit_persist": "discarded",
+                                                "minor": "generated", "fix": "revised", "discard": "revised",
+                                                "digit_override": "revised", "digit_persist": "revised",
                                                 "character_override": "revised", "style_override": "revised",
-                                                "extra_character_override": "revised"}[mode])
-            self.assertEqual(len(list(root.glob("*.png"))), 1 if mode in
-                             ("pass", "minor", "fix", "digit_override", "character_override",
-                              "style_override", "extra_character_override") else 0)
-            if mode == "fix":
+                                                "extra_character_override": "revised",
+                                                "choose_original": "generated", "review_error": "generated",
+                                                "revision_error": "generated", "selection_error": "generated"}[mode])
+            self.assertEqual(len(list(root.glob("*.png"))), 0 if mode == "skip" else 1)
+            if mode not in ("skip", "pass", "minor", "review_error"):
                 self.assertEqual(result["revision_count"], 1)
+            if mode != "skip":
+                self.assertEqual(result["selected_version"],
+                                 "수정본" if result["status"] == "revised" else "원본")
+                with Image.open(root / result["image_file"]) as delivered:
+                    expected = (100, 62, 156) if result["status"] == "revised" else (191, 129, 90)
+                    self.assertEqual(delivered.getpixel((300, 300)), expected)
+            if mode in ("fix", "discard", "choose_original"):
+                self.assertEqual(client.selection_images, ["sheet.jpg", "original.png", "revised.png"])
             return result.copy()
 
     def test_decisions_and_single_revision(self):
         for mode in ("skip", "pass", "minor", "fix", "discard", "digit_override",
                      "digit_persist", "character_override", "style_override",
-                     "extra_character_override"):
+                     "extra_character_override", "choose_original", "review_error",
+                     "revision_error", "selection_error"):
             with self.subTest(mode=mode):
                 self.run_case(mode)
 
@@ -182,7 +200,15 @@ class WorkflowTests(unittest.TestCase):
                 summary_rows = summary.findall(".//x:sheetData/x:row", ns)
                 detail_rows = detail.findall(".//x:sheetData/x:row", ns)
                 self.assertEqual(len(detail_rows), len(items) + 1)
-                self.assertEqual(int(summary_rows[12].findall("x:c", ns)[1].find("x:v", ns).text), 2)
+                def summary_number(label):
+                    for row in summary_rows:
+                        cells = row.findall("x:c", ns)
+                        if cells[0].find(".//x:t", ns).text == label:
+                            return int(cells[1].find("x:v", ns).text)
+                    self.fail(f"요약 항목 누락: {label}")
+                self.assertEqual(summary_number("납품 PNG 건수"), 3)
+                self.assertEqual(summary_number("수정 시도 건수"), 2)
+                self.assertEqual(summary_number("이전 작업 폐기 건수"), 0)
                 self.assertEqual(len(workbook.testzip() or ""), 0)
 
 
