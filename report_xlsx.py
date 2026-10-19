@@ -12,7 +12,9 @@ DETAIL_COLUMNS = [
     ("행", "row_number"), ("원어 단어", "word"), ("한국어 뜻", "meaning_ko"),
     ("상태", "status"), ("제작 판단·생략 이유", "decision_reason"),
     ("연상 장면", "scene"), ("기억 단서", "memory_cue"),
+    ("뜻을 보여주는 단서", "visual_signal"),
     ("다람쥐 등장", "use_squirrel"), ("문자 사용", "use_text"),
+    ("반복 사물", "object_keys"), ("참고한 기존 그림", "object_reference_files"),
     ("검토 지적 사항", "review_notes"), ("수정 횟수", "revision_count"),
     ("선택한 그림", "selected_version"),
     ("최종 판정·실패 사유", "final_reason"), ("납품 파일", "image_file"),
@@ -76,6 +78,7 @@ def write_report(path: Path, job: dict, items: list[dict]) -> None:
         ["원본 선택 건수", counts["generated"]],
         ["수정본 선택 건수", counts["revised"]],
         ["수정 시도 건수", sum(bool(i.get("revision_count")) for i in items)],
+        ["기존 사물 참고 건수", sum(bool(i.get("object_reference_files")) for i in items)],
         ["생략 건수", counts["skipped"]],
         ["이전 작업 폐기 건수", counts["discarded"]],
         ["오류 건수", counts["error"]],
@@ -92,7 +95,8 @@ def write_report(path: Path, job: dict, items: list[dict]) -> None:
         ["비용", "단가 및 과금 세부 내역 미확인으로 미기재"],
     ]
     detail = [[label for label, _ in DETAIL_COLUMNS]]
-    detail += [[item.get(key, "") for _, key in DETAIL_COLUMNS] for item in items]
+    detail += [[", ".join(value) if isinstance(value := item.get(key, ""), list) else value
+                for _, key in DETAIL_COLUMNS] for item in items]
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     with ZipFile(tmp, "w", ZIP_DEFLATED) as out:
@@ -127,5 +131,5 @@ def write_report(path: Path, job: dict, items: list[dict]) -> None:
 <cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="1" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"/></cellXfs>
 </styleSheet>''')
         out.writestr("xl/worksheets/sheet1.xml", _sheet(summary, [31, 100], False, False))
-        out.writestr("xl/worksheets/sheet2.xml", _sheet(detail, [8, 26, 28, 13, 52, 52, 40, 14, 12, 55, 11, 14, 55, 28, 12, 13, 13, 13], True, True))
+        out.writestr("xl/worksheets/sheet2.xml", _sheet(detail, [8, 26, 28, 13, 52, 52, 40, 43, 14, 12, 28, 45, 55, 11, 14, 55, 28, 12, 13, 13, 13], True, True))
     tmp.replace(path)

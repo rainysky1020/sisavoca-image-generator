@@ -32,18 +32,26 @@ class FakeClient:
         self.edits = 0
         self.reviews = 0
         self.image_prompts = []
+        self.edit_images = []
+        self.response_images = {}
+        self.response_prompts = {}
 
     def response(self, prompt, schema_name, schema, images=None):
+        self.response_prompts[schema_name] = prompt
+        self.response_images[schema_name] = [name for name, _ in images or []]
         if schema_name == "vocabulary_image_plan":
             content = {"draw": self.mode != "skip", "reason": "연상에 도움" if self.mode != "skip" else "시각화 이득 없음",
                        "scene": "문 앞에서 망설이는 모습", "memory_cue": "멈춘 동작",
                        "use_squirrel": self.mode not in ("object", "text"),
-                       "use_text": self.mode == "text", "allowed_text": "A" if self.mode == "text" else ""}
+                       "use_text": self.mode == "text", "allowed_text": "A" if self.mode == "text" else "",
+                       "visual_signal": "멈춘 자세", "object_keys": ["문"]}
         elif schema_name == "vocabulary_image_selection":
             if self.mode == "selection_error":
                 raise APIError("comparison unavailable")
-            content = {"chosen_image": "original" if self.mode == "choose_original" else "revised",
-                       "reason": "뜻을 더 잘 기억할 수 있음", "remaining_issues": "손 모양 참고" if self.mode == "discard" else ""}
+            content = {"chosen_image": "original" if self.mode in ("choose_original", "digit_override") else "revised",
+                       "reason": "뜻을 더 잘 기억할 수 있음", "remaining_issues": "손 모양 참고" if self.mode == "discard" else "",
+                       "original_digit_issue": "visible" if self.mode in ("digit_override", "digit_persist") else "none",
+                       "revised_digit_issue": "visible" if self.mode == "digit_persist" else "none"}
             self.selection_images = [name for name, _ in images]
         else:
             if self.mode == "review_error":
@@ -60,6 +68,8 @@ class FakeClient:
                        "digit_issue": digit_issue,
                        "character_mismatch": self.mode == "character_override" and self.reviews == 1,
                        "extra_character": self.mode == "extra_character_override" and self.reviews == 1,
+                       "limb_issue": False, "mouth_issue": False, "eye_fear_issue": False,
+                       "object_consistency_issue": False, "meaning_cue_issue": False,
                        "style_issue": "material" if self.mode == "style_override" and self.reviews == 1 else "none"}
         return {"output_text": json.dumps(content), "usage": {"input_tokens": 3, "output_tokens": 2}}
 
@@ -67,6 +77,7 @@ class FakeClient:
         import base64
         self.edits += 1
         self.image_prompts.append(prompt)
+        self.edit_images.append([name for name, _ in images])
         if self.mode == "revision_error" and self.edits == 2:
             raise APIError("revision unavailable")
         foreground = "#643e9c" if self.edits == 2 else "#bf815a"
@@ -133,12 +144,33 @@ class WorkflowTests(unittest.TestCase):
             sheet.write_bytes(b"fake reference")
             result = process_item(item, client, sheet, root, lambda _: None)
             self.assertEqual(result["status"], "revised")
-            self.assertIn("playful contemporary mobile", client.image_prompts[0])
+            self.assertIn("current 2026 mobile", client.image_prompts[0])
             self.assertIn("arms are ONLY short curved strokes", client.image_prompts[0])
             self.assertIn("NEVER draw a", client.image_prompts[0])
+            self.assertIn("No missing mouth", client.image_prompts[0])
+            self.assertIn("No bulging, glowing", client.image_prompts[0])
+            self.assertIn("Direct visual signal: 멈춘 자세", client.image_prompts[0])
             self.assertIn("no separate hands", client.image_prompts[1])
             self.assertIn("two small unbroken brown ovals", client.image_prompts[1])
             self.assertIn("손가락·발가락", result["review_notes"])
+
+    def test_pointing_uses_gaze_or_arrow_and_inspects_single_finger(self):
+        item = parse_csv("word,meaning_ko\npoint,가리키다\n".encode())[0]
+        client = FakeClient("digit_override")
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:
+            root = Path(directory)
+            sheet = root / "sheet.jpg"
+            sheet.write_bytes(b"fake reference")
+            result = process_item(item, client, sheet, root, lambda _: None)
+            self.assertEqual(result["status"], "revised")
+            self.assertIn("NEVER plan an index-finger", client.response_prompts["vocabulary_image_plan"])
+            self.assertIn("reinterpret it as looking toward", client.image_prompts[0])
+            self.assertIn("single index-finger shape counts as 'visible'",
+                          client.response_prompts["vocabulary_image_review"])
+            self.assertIn("remove the pointing hand/finger/extended arm", client.image_prompts[1])
+            self.assertIn("choose the fingerless version",
+                          client.response_prompts["vocabulary_image_selection"])
+            self.assertIn("손가락 없는 후보 우선 선택", result["final_reason"])
 
     def test_object_and_text_rules(self):
         for mode, expected in (("object", "No squirrel"), ("text", "Only visible text allowed: A")):
@@ -150,6 +182,30 @@ class WorkflowTests(unittest.TestCase):
                 sheet.write_bytes(b"fake reference")
                 process_item(item, client, sheet, root, lambda _: None)
                 self.assertIn(expected, client.image_prompts[0])
+
+    def test_reuses_prior_object_in_generation_revision_and_review(self):
+        item = parse_csv("word,meaning_ko\nhesitate,망설이다\n".encode())[0]
+        client = FakeClient("digit_override")
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:
+            root = Path(directory)
+            sheet = root / "sheet.jpg"
+            sheet.write_bytes(b"fake reference")
+            lookups = []
+            def find_refs(keys):
+                lookups.append(keys)
+                return [("문", "older-job/door.png", png())]
+            result = process_item(item, client, sheet, root, lambda _: None,
+                                  find_refs, ["문"])
+            self.assertEqual(lookups, [["문"]])
+            self.assertEqual(result["object_reference_files"], ["older-job/door.png"])
+            self.assertEqual(client.edit_images[0], ["sheet.jpg", "object_ref_1.png"])
+            self.assertEqual(client.edit_images[1], ["sheet.jpg", "draft.png", "object_ref_1.png"])
+            self.assertEqual(client.response_images["vocabulary_image_review"],
+                             ["sheet.jpg", "draft.png", "object_ref_1.png"])
+            self.assertEqual(client.response_images["vocabulary_image_selection"],
+                             ["sheet.jpg", "original.png", "revised.png", "object_ref_1.png"])
+            self.assertIn("Image 2 contains the established '문' design", client.image_prompts[0])
+            self.assertIn("Image 3 contains the established '문' design", client.image_prompts[1])
 
     def test_filename_preserves_word_and_avoids_collisions(self):
         with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:

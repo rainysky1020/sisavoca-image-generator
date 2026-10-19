@@ -13,10 +13,31 @@ from io import BytesIO
 from PIL import Image
 
 import app
-from test_workflow import FakeClient, TEST_TEMP
+from test_workflow import FakeClient, TEST_TEMP, png
 
 
 class HttpWorkflowTests(unittest.TestCase):
+    def test_object_reference_survives_across_jobs(self):
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:
+            output = Path(directory)
+            with patch.object(app, "OUTPUT", output), patch.object(app, "DB_PATH", output / "jobs.db"):
+                app.init_db()
+                first_id = app.create_job("word,meaning_ko\napple,사과\n".encode(), "first.csv")
+                _, rows = app.get_job(first_id)
+                first = rows[0]
+                first.update(status="generated", object_keys=["사과", "접시"], image_file="apple.png")
+                (output / first_id / "apple.png").write_bytes(png())
+                app.save_item(first_id, first)
+                self.assertIn("사과", app.known_object_keys())
+                refs = app.find_object_references(["사과"])
+                self.assertEqual([(key, source) for key, source, _ in refs],
+                                 [("사과", f"{first_id}/apple.png")])
+                self.assertEqual(refs[0][2], png())
+                self.assertEqual([(key, source) for key, source, _ in
+                                  app.find_object_references(["사과", "접시"])],
+                                 [("사과, 접시", f"{first_id}/apple.png")])
+                self.assertEqual(app.find_object_references(["우산"]), [])
+
     def test_upload_progress_and_downloads(self):
         with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:
             output = Path(directory)

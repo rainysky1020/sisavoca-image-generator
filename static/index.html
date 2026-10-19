@@ -87,7 +87,7 @@ function render(data) {
   $('stop').classList.toggle('hidden', job.status!=='running');
   $('resume').classList.toggle('hidden', !['stopped','queued'].includes(job.status));
   const counts={}; items.forEach(item=>counts[item.status]=(counts[item.status]||0)+1);
-  const metrics=[['입력',items.length],['납품',(counts.generated||0)+(counts.revised||0)],['원본 선택',counts.generated||0],['수정본 선택',counts.revised||0],['수정 시도',items.filter(item=>item.revision_count).length],['생략',counts.skipped||0],['이전 작업 폐기',counts.discarded||0],['오류',counts.error||0]];
+  const metrics=[['입력',items.length],['납품',(counts.generated||0)+(counts.revised||0)],['원본 선택',counts.generated||0],['수정본 선택',counts.revised||0],['수정 시도',items.filter(item=>item.revision_count).length],['사물 재사용',items.filter(item=>item.object_reference_files?.length).length],['생략',counts.skipped||0],['이전 작업 폐기',counts.discarded||0],['오류',counts.error||0]];
   $('metrics').replaceChildren(...metrics.map(([label,count])=>{const box=node('div','','metric');box.append(node('b',count),node('span',label));return box;}));
   $('tbody').replaceChildren();
   items.forEach(item=>{

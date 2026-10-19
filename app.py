@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
-from pipeline import APIError, OpenAIClient, load_api_key, process_item
+from pipeline import APIError, OpenAIClient, load_api_key, normalize_object_keys, process_item
 from report_xlsx import write_report
 
 
@@ -86,7 +86,8 @@ def parse_csv(data: bytes) -> list[dict]:
         if any(len(item[key]) > 2000 for key in item):
             problems.append("셀 길이 2000자 초과")
         item.update(row_number=number, status="error" if problems else "queued", decision_reason="", scene="",
-                    memory_cue="", use_squirrel="", use_text="", review_notes="",
+                    memory_cue="", visual_signal="", object_keys=[], object_reference_files=[],
+                    use_squirrel="", use_text="", review_notes="",
                     selected_version="",
                     revision_count=0, final_reason="; ".join(problems), image_file="",
                     api_calls=0, input_tokens=0, output_tokens=0, image_tokens=0)
@@ -134,6 +135,52 @@ def save_item(job_id: str, item: dict) -> None:
         db.execute("UPDATE jobs SET updated_at=? WHERE id=?", (now(), job_id))
 
 
+def known_object_keys() -> list[str]:
+    """Recent reusable prop names from completed jobs, for the planning prompt."""
+    with connect() as db:
+        rows = db.execute("SELECT payload FROM items WHERE status IN ('generated','revised') "
+                          "ORDER BY rowid DESC").fetchall()
+    keys = []
+    for row in rows:
+        for key in normalize_object_keys(json.loads(row["payload"]).get("object_keys")):
+            if key not in keys:
+                keys.append(key)
+            if len(keys) == 100:
+                return keys
+    return keys
+
+
+def find_object_references(keys: list[str]) -> list[tuple[str, str, bytes]]:
+    """Use the earliest delivered PNG for each matching prop as its stable design reference."""
+    wanted = normalize_object_keys(keys)
+    if not wanted:
+        return []
+    with connect() as db:
+        rows = db.execute("SELECT job_id, payload FROM items WHERE status IN ('generated','revised') "
+                          "ORDER BY rowid ASC").fetchall()
+    found = []
+    used_files = set()
+    matched_keys = set()
+    for row in rows:
+        item = json.loads(row["payload"])
+        matching = [key for key in wanted if key not in matched_keys and
+                    key in normalize_object_keys(item.get("object_keys"))]
+        filename = item.get("image_file", "")
+        if not matching or not filename or Path(filename).name != filename:
+            continue
+        path = OUTPUT / row["job_id"] / filename
+        if not path.is_file():
+            continue
+        source = f"{row['job_id']}/{filename}"
+        if source not in used_files:
+            found.append((", ".join(matching), source, path.read_bytes()))
+            used_files.add(source)
+            matched_keys.update(matching)
+        if len(found) == 2:
+            break
+    return found
+
+
 def refresh_report(job_id: str) -> None:
     job, items = get_job(job_id) or (None, [])
     if job:
@@ -162,7 +209,8 @@ def worker(job_id: str) -> None:
             # An interrupted in-flight row is retried from planning; completed rows are never billed again.
             try:
                 process_item(item, client, SHEET, OUTPUT / job_id,
-                             lambda value: save_item(job_id, value))
+                             lambda value: save_item(job_id, value),
+                             find_object_references, known_object_keys())
             except Exception as exc:
                 item.update(status="error", final_reason=str(exc)[:500])
                 save_item(job_id, item)

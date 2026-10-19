@@ -52,12 +52,32 @@ Copy this specific visual grammar even when the scene contains no squirrel:
   hands or articulated wrists. Feet are two small, single-piece brown ovals. If an action needs
   contact with a prop, let the simple rounded arm/body overlap or touch it. NEVER draw a
   gripping hand, fingers, toes, claws, nails, digit gaps, notches, or separating lines.
+- When the meaning involves pointing, indicating or showing a direction, NEVER pose the
+  squirrel as pointing with an index finger, an extended hand, a narrow tapered arm, or
+  a human-like gesture. Show the target with the squirrel's gaze and body orientation,
+  a simple freestanding arrow or motion mark, or the position of the target object.
+  Any visible arm stays a short, blunt, rounded curve attached to the body with no
+  separate hand or tip. This rule applies even when the word itself means 'point'.
+- Keep the visible arms complete and attached to the body: no missing, floating, doubled or
+  protruding arm strokes. In a side view one arm can be visible; in a back view follow the
+  sheet. Keep exactly one complete, connected mouth in a plausible position below the nose.
+  No missing mouth, extra lips, duplicate mouth, stray black stroke or line extending past
+  the face. Use only the sheet's simple mouth vocabulary.
 - For emotion, use the sheet's face vocabulary: neutral round eyes, smiling crescent eyes,
   squeezed excited eyes, round surprised mouth, sparkling teary eyes, angled angry brows,
   or shy cheek marks. Change the face and simple pose, not the character's anatomy or palette.
-Use one clear mnemonic idea at mobile size. Keep the modern, playful contemporary mobile
-sticker feeling through bold scale, lively asymmetry and generous white space, NOT through
-restyling, vintage storybook texture, fashion or clutter. If no actor is needed, draw only
+- Keep eye size and pupil-to-white balance close to the sheet. Eyes are a supporting face
+  feature, NEVER the main giant focal point. No bulging, glowing, realistic, hollow or
+  isolated eyes, oversized pupils, extreme close-up stare, or horror-like expression.
+Use one clear mnemonic idea at mobile size. Convey the Korean meaning DIRECTLY with one
+recognizable object, visual indicator, action or restrained sheet-style expression. A viewer
+should understand the action or relation without a caption. Keep a current 2026 mobile
+illustration feeling through crisp flat shapes, confident size contrast, lively asymmetry,
+clear visual hierarchy and generous white space. Make it gender-neutral and broadly inviting:
+no frills, florals, lace, hearts, sparkles, cosmetic accents, powdery pastel wash or overly
+sweet feminine coding. Avoid sepia, antique paper, vintage storybook, watercolor, rustic
+craft, old textbook clip art and decorative clutter. Modernity must not restyle the squirrel.
+If no actor is needed, draw only
 objects/symbols with the SAME round brown-outlined flat visual grammar and palette; do not
 invent another character or put faces on objects.
 """
@@ -142,8 +162,11 @@ PLAN_SCHEMA = {
     "properties": {"draw": {"type": "boolean"}, "reason": {"type": "string"},
                    "scene": {"type": "string"}, "memory_cue": {"type": "string"},
                    "use_squirrel": {"type": "boolean"}, "use_text": {"type": "boolean"},
-                   "allowed_text": {"type": "string"}},
-    "required": ["draw", "reason", "scene", "memory_cue", "use_squirrel", "use_text", "allowed_text"],
+                   "allowed_text": {"type": "string"},
+                   "visual_signal": {"type": "string"},
+                   "object_keys": {"type": "array", "items": {"type": "string"}}},
+    "required": ["draw", "reason", "scene", "memory_cue", "use_squirrel", "use_text",
+                 "allowed_text", "visual_signal", "object_keys"],
 }
 REVIEW_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -152,15 +175,24 @@ REVIEW_SCHEMA = {
                    "digit_issue": {"type": "string", "enum": ["none", "suspected", "visible"]},
                    "character_mismatch": {"type": "boolean"},
                    "extra_character": {"type": "boolean"},
+                   "limb_issue": {"type": "boolean"},
+                   "mouth_issue": {"type": "boolean"},
+                   "eye_fear_issue": {"type": "boolean"},
+                   "object_consistency_issue": {"type": "boolean"},
+                   "meaning_cue_issue": {"type": "boolean"},
                    "style_issue": {"type": "string", "enum": ["none", "minor", "material"]}},
     "required": ["decision", "issues", "fix_instruction", "digit_issue", "character_mismatch",
-                 "extra_character", "style_issue"],
+                 "extra_character", "limb_issue", "mouth_issue", "eye_fear_issue",
+                 "object_consistency_issue", "meaning_cue_issue", "style_issue"],
 }
 SELECTION_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {"chosen_image": {"type": "string", "enum": ["original", "revised"]},
-                   "reason": {"type": "string"}, "remaining_issues": {"type": "string"}},
-    "required": ["chosen_image", "reason", "remaining_issues"],
+                   "reason": {"type": "string"}, "remaining_issues": {"type": "string"},
+                   "original_digit_issue": {"type": "string", "enum": ["none", "suspected", "visible"]},
+                   "revised_digit_issue": {"type": "string", "enum": ["none", "suspected", "visible"]}},
+    "required": ["chosen_image", "reason", "remaining_issues",
+                 "original_digit_issue", "revised_digit_issue"],
 }
 
 
@@ -173,6 +205,16 @@ def _blocking_issues(review: dict) -> str:
         problems.append("다람쥐 캐릭터 시트와 핵심 형태가 다름")
     if review["extra_character"]:
         problems.append("다람쥐 외에 불필요한 얼굴 있는 캐릭터가 추가됨")
+    if review["limb_issue"]:
+        problems.append("다람쥐 팔이 빠지거나 중복·분리·돌출됨")
+    if review["mouth_issue"]:
+        problems.append("다람쥐 입이 빠지거나 중복·분리·돌출됨")
+    if review["eye_fear_issue"]:
+        problems.append("눈의 크기·시선이 과장되어 공포감을 줌")
+    if review["object_consistency_issue"]:
+        problems.append("기존 삽화의 동일 사물 디자인과 크게 다름")
+    if review["meaning_cue_issue"]:
+        problems.append("뜻을 직관적으로 보여주는 표시·동작·표정이 불분명함")
     if review["style_issue"] == "material":
         problems.append("입체 명암·그라데이션 또는 복고풍이 화풍을 크게 벗어남")
     return "; ".join(problems)
@@ -274,6 +316,22 @@ def _context(item: dict) -> str:
             "Do not rely on an assumed language or an unrelated sense.")
 
 
+def normalize_object_keys(values: object) -> list[str]:
+    """Keep a small, stable set of canonical Korean nouns for reference matching."""
+    if not isinstance(values, list):
+        return []
+    keys = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        key = unicodedata.normalize("NFC", value).strip().casefold()
+        if 1 <= len(key) <= 40 and key not in keys:
+            keys.append(key)
+        if len(keys) == 3:
+            break
+    return keys
+
+
 def image_filename(word: str, output_dir: Path) -> str:
     """Preserve the original word in a portable filename and avoid overwriting duplicates."""
     stem = unicodedata.normalize("NFC", word).strip()
@@ -293,7 +351,9 @@ def image_filename(word: str, output_dir: Path) -> str:
 
 
 def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir: Path,
-                 save: Callable[[dict], None]) -> dict:
+                 save: Callable[[dict], None],
+                 find_object_references: Callable[[list[str]], list[tuple[str, str, bytes]]] | None = None,
+                 known_object_keys: list[str] | None = None) -> dict:
     """Process one row; save is called after every irreversible API result."""
     reference = sheet_path.read_bytes()
     item["status"] = "planning"
@@ -306,20 +366,46 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
               "so make the scene and mnemonic cue specific enough at this planning stage. "
               "Use a squirrel only when a visible actor, action, expression, or emotion is needed; "
               "otherwise use objects or symbols with no animal. Prefer no letters or numbers; "
-              "permit only if essential to the mnemonic. Return a concrete simple scene.\n" + _context(item))
+              "permit only if essential to the mnemonic. Specify a DIRECT visual_signal: a "
+              "recognizable indicator, motion, relationship, or sheet-style facial expression "
+              "that makes the Korean meaning obvious without text. If the meaning or scene involves "
+              "pointing or indicating, NEVER plan an index-finger or hand-pointing pose. Instead "
+              "show the target with the squirrel's gaze/body direction, a separate simple arrow, "
+              "or the target object's placement; its arms remain short blunt curves. This also "
+              "applies when the Korean meaning is '가리키다'. List up to three reusable "
+              "physical props as object_keys using singular Korean dictionary nouns, excluding "
+              "the squirrel and generic backgrounds. Reuse an existing key when it names the same "
+              "object. Return a concrete simple scene.\n" + _context(item))
+    if known_object_keys:
+        prompt += "\nExisting object names to reuse when relevant: " + ", ".join(known_object_keys[:100])
     result = client.response(prompt, "vocabulary_image_plan", PLAN_SCHEMA)
     _add_usage(item, result)
     plan = _text(result)
     permitted_text = str(plan["allowed_text"]).strip() if plan["use_text"] else ""
+    object_keys = normalize_object_keys(plan["object_keys"])
     item.update(decision_reason=plan["reason"], scene=plan["scene"],
                 memory_cue=plan["memory_cue"], use_squirrel=bool(plan["use_squirrel"]),
-                use_text=bool(permitted_text))
+                use_text=bool(permitted_text), visual_signal=plan["visual_signal"],
+                object_keys=object_keys)
     if not plan["draw"]:
         item.update(status="skipped", final_reason=plan["reason"])
         save(item)
         return item
     item["status"] = "generating"
     save(item)
+    prior_objects = find_object_references(object_keys)[:2] if find_object_references else []
+    item["object_reference_files"] = [source for _, source, _ in prior_objects]
+    object_images = [(f"object_ref_{index}.png", data)
+                     for index, (_, _, data) in enumerate(prior_objects, 1)]
+    def object_instruction(start_index: int) -> str:
+        if not prior_objects:
+            return ""
+        return ("Earlier delivered illustrations are supplied only to match a recurring "
+                "OBJECT's silhouette, palette, outline and distinguishing details. "
+                "Keep the new scene and meaning; do not copy an earlier composition or "
+                "character pose. " + " ".join(
+                    f"Image {index + start_index} contains the established '{key}' design."
+                    for index, (key, _, _) in enumerate(prior_objects)))
     character = ("Include exactly one squirrel character matching the NEW multi-view reference sheet. "
                  "Use its front/side/back views for anatomy and its face studies only for expression. "
                  "No other faces, animals, mascots, or anthropomorphic objects."
@@ -330,11 +416,16 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
     image_prompt = (f"Create a standalone vocabulary illustration on an exact pure white canvas.\n"
                     f"{STYLE_GUIDE}\n"
                     f"{character}\n{text_rule}\nScene: {plan['scene']}\n"
-                    f"Mnemonic cue: {plan['memory_cue']}\nTarget meaning: {item['meaning_ko']}. "
+                    f"Mnemonic cue: {plan['memory_cue']}\nDirect visual signal: "
+                    f"{plan['visual_signal']}\nTarget meaning: {item['meaning_ko']}. "
+                    f"{object_instruction(2)} "
+                    "If the scene says the squirrel points, reinterpret it as looking toward or "
+                    "turning toward the target with a separate arrow or motion cue. Do not draw "
+                    "an extended pointing arm, hand, index finger, or tapered finger-like tip. "
                     "One instantly readable central idea. Simplify any room or setting to a few flat "
                     "graphic props; avoid a rendered environment. Leave clear PURE WHITE (#FFFFFF) "
                     "margins; no off-white background, floor, shadow, or frame.")
-    result = client.edit_image(image_prompt, [(sheet_path.name, reference)])
+    result = client.edit_image(image_prompt, [(sheet_path.name, reference), *object_images])
     _add_usage(item, result)
     original = _image(result)
     item["status"] = "reviewing"
@@ -345,7 +436,10 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "specific NEW multi-view sheet: warm-brown outlines, flat golden-tan body, "
                      "cream ear inserts, single curled brown tail, coral oval cheeks, and sparse "
                      "rounded props. The bottom rows are expression studies, not extra characters. "
-                     "Keep its current playful graphic composition. "
+                     "Keep a current 2026 mobile-illustration composition with clear hierarchy, "
+                     "crisp flat forms and useful asymmetry. Flag material vintage/sepia treatment "
+                     "or strong frilly/floral, powder-pastel, gender-coded decoration; the mascot "
+                     "itself must still match the supplied sheet. "
                      "Treat small palette differences, a tiny local gradient, minor texture, or a minor "
                      "compositional imperfection as non-blocking. "
                      "Choose 'keep' for a usable image even when you mention minor issues. "
@@ -361,6 +455,11 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "ones touching props: set digit_issue to 'visible' for fingers, toes, claws, "
                      "nails, splits, notches, or digit-separating lines, 'suspected' for ambiguous "
                      "digit-like marks, and 'none' only when no digit-like mark is visible. "
+                     "For any pointing/indicating scene, zoom attention to the arm end: a single "
+                     "index-finger shape counts as 'visible' even without multiple finger lines; "
+                     "a tapered finger-like arm end counts as 'suspected'. A long, detached, or "
+                     "human-like pointing arm also sets limb_issue. Gaze, body direction, and a "
+                     "separate arrow are acceptable alternatives. "
                      "A paw hidden behind an object is not by itself suspicious. Set "
                      "character_mismatch when the large ears, three forehead stripes, simple face, "
                      "compact body, curled tail, or sheet-specific arm/foot design differs materially "
@@ -369,19 +468,32 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "mouth changes from the sheet's expression studies as a mismatch. A non-none "
                      "digit_issue, character_mismatch, "
                      "extra_character, or material style_issue requires "
-                     "revision even if the mnemonic is otherwise useful. The output PNG must show "
+                     "revision even if the mnemonic is otherwise useful. Set limb_issue only for "
+                     "clearly missing, doubled, detached or protruding arm strokes for the pose; "
+                     "one visible arm in profile or no arms visible from behind can be correct. "
+                     "Set mouth_issue for a missing, duplicated, detached or overflowing mouth, "
+                     "not for a normal sheet-style change of expression. Set eye_fear_issue only "
+                     "when enlarged or isolated eyes, extreme pupils or a fixed stare create a "
+                     "frightening emphasis beyond the reference sheet. Set meaning_cue_issue "
+                     "when the planned indicator, movement or expression fails to make the Korean "
+                     "meaning intuitive. Set object_consistency_issue only when a matching prior "
+                     "object reference is provided and the same object visibly changes design. "
+                     "These clear issues also call for one revision. The output PNG must show "
                      "the illustration on an opaque, pure white (#FFFFFF) background without a "
                      "colored panel or gradient backdrop. "
                      "Give a concise reason and, "
                      "only when revision is necessary, a specific fix.\n" +
-                     _context(item) + f"\nPlanned scene: {plan['scene']}\nSquirrel allowed: "
-                     f"{plan['use_squirrel']}\nVisible text allowed: {text_rule}")
+                     _context(item) + f"\nPlanned scene: {plan['scene']}\nDirect visual signal: "
+                     f"{plan['visual_signal']}\nSquirrel allowed: {plan['use_squirrel']}\n"
+                     f"Visible text allowed: {text_rule} " + " ".join(
+                         f"Image {index + 3} is the established '{key}' object design."
+                         for index, (key, _, _) in enumerate(prior_objects)))
     selected = original
     item["selected_version"] = "원본"
     try:
         result = client.response(review_prompt + "\nImage 1 is the reference sheet; image 2 is the draft to judge.",
                                  "vocabulary_image_review", REVIEW_SCHEMA,
-                                 [(sheet_path.name, reference), ("draft.png", original)])
+                                 [(sheet_path.name, reference), ("draft.png", original), *object_images])
         _add_usage(item, result)
         review = _text(result)
         blocking = _blocking_issues(review)
@@ -398,17 +510,27 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
             save(item)
             fix_prompt = (f"Revise the second input image to fix this material issue: "
                           f"{item['review_notes'] or 'material review failure'}. "
-                          f"{review['fix_instruction']} Preserve the intended scene and vocabulary meaning. "
+                          f"{review['fix_instruction']} Preserve the intended scene, direct visual "
+                          f"signal ({plan['visual_signal']}) and vocabulary meaning. "
                           f"The first input is the authoritative style sheet. {STYLE_GUIDE} "
                           f"Focus on the material issue instead of cosmetic restyling. If paws or feet "
                           f"are involved, redraw arms as short curved strokes with no separate hands "
                           f"and feet as two small unbroken brown ovals without digits. "
+                          "Keep the exact count and attachment of visible arms and one complete "
+                          "sheet-style mouth. Keep eyes in the sheet's calm proportions without "
+                          "a frightening oversized stare. "
+                          "If the squirrel is pointing, remove the pointing hand/finger/extended "
+                          "arm entirely. Preserve the meaning with its gaze or body direction and "
+                          "a separate simple arrow or target placement instead; the arm must end "
+                          "as a short blunt curve attached to the torso. "
+                          f"{object_instruction(3)} "
                           f"{character} {text_rule} "
                           "Pure white (#FFFFFF) opaque background with clear margins. The application "
                           "will export the final image as an 800x800 PNG.")
             item["revision_count"] = 1
             try:
-                result = client.edit_image(fix_prompt, [(sheet_path.name, reference), ("draft.png", original)])
+                result = client.edit_image(fix_prompt, [(sheet_path.name, reference),
+                                                        ("draft.png", original), *object_images])
                 _add_usage(item, result)
                 revised = _image(result)
             except (APIError, ValueError, KeyError, TypeError):
@@ -421,21 +543,36 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     "Choose exactly ONE of the two completed vocabulary illustrations for delivery. "
                     "Image 1 is the authoritative squirrel style sheet; image 2 is ORIGINAL; "
                     "image 3 is REVISED. Compare images 2 and 3 for the specified Korean meaning "
-                    "and memory cue FIRST, then character consistency, fingerless limbs, text and "
-                    "visual clarity. Choose the more useful image even if neither is perfect. "
+                    "and direct visual signal FIRST, then current gender-neutral style, prior object "
+                    "consistency, complete arms and mouth, non-frightening eye proportions, fingerless "
+                    "limbs, text and visual clarity. If exactly one version has a visible or "
+                    "finger-like pointing hand and the other conveys the meaning without it, "
+                    "choose the fingerless version. Independently report digit_issue for BOTH "
+                    "original and revised; a single index finger or tapered finger-like tip "
+                    "counts even without separated finger lines. Choose the more useful image even if neither "
+                    "is perfect. "
                     "Do not discard, reject, or request another revision. State the selected image, "
                     "a concise reason and any remaining issues for the editor.\n" + _context(item) +
                     f"\nPlanned scene: {plan['scene']}\nMemory cue: {plan['memory_cue']}\n"
-                    f"Initial review notes: {item['review_notes']}")
+                    f"Direct visual signal: {plan['visual_signal']}\n"
+                    f"Initial review notes: {item['review_notes']} " + " ".join(
+                        f"Image {index + 4} is the established '{key}' object design."
+                        for index, (key, _, _) in enumerate(prior_objects)))
                 try:
                     result = client.response(selection_prompt, "vocabulary_image_selection", SELECTION_SCHEMA,
                                              [(sheet_path.name, reference), ("original.png", original),
-                                              ("revised.png", revised)])
+                                              ("revised.png", revised), *object_images])
                     _add_usage(item, result)
                     choice = _text(result)
                     chosen = choice["chosen_image"]
                     if chosen not in ("original", "revised"):
                         raise ValueError("비교 결과의 선택본이 올바르지 않습니다.")
+                    original_digits = choice["original_digit_issue"]
+                    revised_digits = choice["revised_digit_issue"]
+                    if original_digits != "none" and revised_digits == "none":
+                        chosen = "revised"
+                    elif revised_digits != "none" and original_digits == "none":
+                        chosen = "original"
                 except (APIError, ValueError, KeyError, TypeError):
                     item.update(status="generated", final_reason="원본·수정본 비교에 실패해 원본을 납품함")
                     item["review_notes"] += "; 최종 비교 실패"
@@ -443,8 +580,13 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     selected = revised if chosen == "revised" else original
                     item["selected_version"] = "수정본" if chosen == "revised" else "원본"
                     item["status"] = "revised" if chosen == "revised" else "generated"
-                    item["final_reason"] = (f"원본·수정본 비교 후 {item['selected_version']} 선택: "
-                                            f"{choice['reason']}")
+                    if chosen != choice["chosen_image"]:
+                        item["final_reason"] = (
+                            f"원본·수정본 비교 후 {item['selected_version']} 선택: "
+                            "손가락 없는 후보 우선 선택; 비교 모델 의견: " + choice["reason"])
+                    else:
+                        item["final_reason"] = (f"원본·수정본 비교 후 {item['selected_version']} 선택: "
+                                                f"{choice['reason']}")
                     if choice["remaining_issues"]:
                         item["review_notes"] += "; 선택본 참고 사항: " + choice["remaining_issues"]
     filename = image_filename(item["word"], output_dir)
