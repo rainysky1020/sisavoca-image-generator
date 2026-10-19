@@ -115,9 +115,11 @@ class WorkflowTests(unittest.TestCase):
             sheet.write_bytes(b"fake reference")
             result = process_item(item, client, sheet, root, lambda _: None)
             self.assertEqual(result["status"], "revised")
-            self.assertIn("contemporary mobile sticker", client.image_prompts[0])
-            self.assertIn("NO fingers, toes", client.image_prompts[0])
-            self.assertIn("unbroken solid shapes", client.image_prompts[1])
+            self.assertIn("playful contemporary mobile", client.image_prompts[0])
+            self.assertIn("arms are ONLY short curved strokes", client.image_prompts[0])
+            self.assertIn("NEVER draw a", client.image_prompts[0])
+            self.assertIn("no separate hands", client.image_prompts[1])
+            self.assertIn("two small unbroken brown ovals", client.image_prompts[1])
             self.assertIn("손가락·발가락", result["review_notes"])
 
     def test_object_and_text_rules(self):

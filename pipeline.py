@@ -25,33 +25,41 @@ TEXT_MODEL = "gpt-6-sol"
 IMAGE_MODEL = "gpt-image-2"
 IMAGE_SIZE = "1024x1024"
 DELIVERY_SIZE = (800, 800)
-STYLE_GUIDE = """The attached sheet is the publisher's authoritative illustration style reference.
-Draw the illustration isolated on PURE WHITE (#FFFFFF). The final delivered PNG must have an
-opaque, exact #FFFFFF background, not off-white, cream, gray, or transparency. No colored
-backdrop, floor, cast shadow, frame, or panel. Copy the sheet's compact rounded silhouettes,
-clean vector-like edges, very few shapes, and completely flat opaque color fields. Every shape,
-including the squirrel and every prop, uses one uniform solid fill. NO gradients on any surface,
-highlights, texture, shadows,
-realistic lighting, isometric rooms, perspective-heavy 3D scenes, tiny anatomical details,
-or decorative clutter.
-Make the overall illustration feel current and playful through bold scale, lively asymmetrical
-placement, generous white space, and one clear visual surprise that reinforces the mnemonic.
-Think contemporary mobile sticker/editorial illustration, not vintage storybook, sepia,
-watercolor, rustic craft, or nostalgic classroom clip art. Modernity comes from composition,
-NOT from restyling the squirrel or adding fashion, accessories, gradients, or extra detail.
-Keep the sheet's warm tan, medium brown, pale cream, soft pink, and black as the dominant
-palette. At most one crisp contemporary accent color may appear on a non-character object
-when it makes the meaning easier to remember. Do not recolor the squirrel. Do not combine several
-bright accent colors in one image.
-If a squirrel appears, reproduce the sheet's character design: same large rounded ears,
-three dark forehead stripes, big round eyes, pink oval cheeks, tiny black nose and mouth,
-simple rounded belly, curled brown tail, and compact proportions. Vary only its pose and
-expression as needed. It is the only character: no additional animal, mascot, human, face on
-an object, or anthropomorphic toy. Its arms end in single smooth mitten-like paws, and its feet are
-single smooth oval shapes. Hands and feet must have NO fingers, toes, claws, nails, splits,
-notches, or digit-separating lines, even when holding an object. A prop may touch or sit
-against a solid paw; never draw a gripping hand. If no squirrel is required, use the same
-flat, rounded visual grammar without copying or adding any character.
+STYLE_GUIDE = """Image 1, '다람쥐 캐릭터 시트2.jpg', is the publisher's authoritative NEW style
+sheet. Its upper row shows the SAME squirrel from front, side and back; its lower two rows
+are expression studies of that same face. They are views, NOT multiple characters to draw.
+Copy this specific visual grammar even when the scene contains no squirrel:
+- Pure opaque #FFFFFF background and open white margins. No floor, colored panel, frame,
+  cast shadow, cream wash, or transparent background.
+- Large soft rounded silhouettes, sparse interior detail, smooth medium-width dark warm-brown
+  outlines (approximately #5C472A), rounded stroke ends and corners, and flat opaque fills.
+  Use roughly consistent outline weight on the squirrel and props. No black outer outline,
+  gradients, texture, broad shading, 3D perspective or realistic lighting.
+- Reference palette: light golden-tan body about #E7BD83, pale cream inner ears about
+  #F3E1B3, medium brown tail and oval feet about #B88C5F, dark brown markings and tail curl
+  about #7F613B, soft coral-pink oval cheeks about #FF9F98, black eyes/nose/mouth and white
+  eye whites. These are guides from the JPEG; match the visible sheet over exact hex codes.
+  Reserve tiny cyan tears or red anger/blush marks for an expression that specifically needs
+  them, as shown on the sheet. Do not recolor the squirrel or add decorative bright colors.
+- Squirrel anatomy: oversized sideways-up rounded ears with cream inserts; broad low rounded
+  head and compact pear/bean-shaped body with no long neck; three short vertical dark forehead
+  stripes; widely spaced big round white eyes with black pupils; pink horizontal oval cheeks;
+  tiny black triangular nose and simple curved mouth; one thick medium-brown curled tail with
+  a single dark inner spiral. In profile, keep the same cheek, muzzle and tail; from behind,
+  keep the three head stripes and single curled tail. No clothes, whiskers, hair, extra markings,
+  or anatomy borrowed from a different squirrel design.
+- The sheet's arms are ONLY short curved strokes on the upper body, without drawn separate
+  hands or articulated wrists. Feet are two small, single-piece brown ovals. If an action needs
+  contact with a prop, let the simple rounded arm/body overlap or touch it. NEVER draw a
+  gripping hand, fingers, toes, claws, nails, digit gaps, notches, or separating lines.
+- For emotion, use the sheet's face vocabulary: neutral round eyes, smiling crescent eyes,
+  squeezed excited eyes, round surprised mouth, sparkling teary eyes, angled angry brows,
+  or shy cheek marks. Change the face and simple pose, not the character's anatomy or palette.
+Use one clear mnemonic idea at mobile size. Keep the modern, playful contemporary mobile
+sticker feeling through bold scale, lively asymmetry and generous white space, NOT through
+restyling, vintage storybook texture, fashion or clutter. If no actor is needed, draw only
+objects/symbols with the SAME round brown-outlined flat visual grammar and palette; do not
+invent another character or put faces on objects.
 """
 
 
@@ -303,7 +311,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
         return item
     item["status"] = "generating"
     save(item)
-    character = ("Include exactly one squirrel character matching the reference sheet. "
+    character = ("Include exactly one squirrel character matching the NEW multi-view reference sheet. "
+                 "Use its front/side/back views for anatomy and its face studies only for expression. "
                  "No other faces, animals, mascots, or anthropomorphic objects."
                  if plan["use_squirrel"] else "No squirrel, no animals, no anthropomorphic actor.")
     text_rule = (f"Only visible text allowed: {permitted_text}. Keep it exact and minimal."
@@ -324,7 +333,10 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
     review_prompt = ("You are selecting usable vocabulary illustrations for publication. "
                      "Favor keeping an image when its Korean meaning is recognizable at mobile size "
                      "and it serves as a useful memory cue. Assess the reference sheet's overall "
-                     "friendly, rounded, flat style and current playful graphic composition. "
+                     "specific NEW multi-view sheet: warm-brown outlines, flat golden-tan body, "
+                     "cream ear inserts, single curled brown tail, coral oval cheeks, and sparse "
+                     "rounded props. The bottom rows are expression studies, not extra characters. "
+                     "Keep its current playful graphic composition. "
                      "Treat small palette differences, a tiny local gradient, minor texture, or a minor "
                      "compositional imperfection as non-blocking. "
                      "Choose 'keep' for a usable image even when you mention minor issues. "
@@ -341,8 +353,12 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "nails, splits, notches, or digit-separating lines, 'suspected' for ambiguous "
                      "digit-like marks, and 'none' only when no digit-like mark is visible. "
                      "A paw hidden behind an object is not by itself suspicious. Set "
-                     "character_mismatch when core features or proportions differ materially from "
-                     "the reference sheet. A non-none digit_issue, character_mismatch, "
+                     "character_mismatch when the large ears, three forehead stripes, simple face, "
+                     "compact body, curled tail, or sheet-specific arm/foot design differs materially "
+                     "from the reference. The arms should be simple curved strokes with NO separate "
+                     "hands; feet should be two undivided brown ovals. Do not treat normal eye and "
+                     "mouth changes from the sheet's expression studies as a mismatch. A non-none "
+                     "digit_issue, character_mismatch, "
                      "extra_character, or material style_issue requires "
                      "revision even if the mnemonic is otherwise useful. The output PNG must show "
                      "the illustration on an opaque, pure white (#FFFFFF) background without a "
@@ -369,7 +385,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                       f"{review['fix_instruction']} Preserve the intended scene and vocabulary meaning. "
                       f"The first input is the authoritative style sheet. {STYLE_GUIDE} "
                       f"Focus on the material issue instead of cosmetic restyling. If paws or feet "
-                      f"are involved, redraw them as unbroken solid shapes without digits. "
+                      f"are involved, redraw arms as short curved strokes with no separate hands "
+                      f"and feet as two small unbroken brown ovals without digits. "
                       f"{character} {text_rule} "
                       "Pure white (#FFFFFF) opaque background with clear margins. The application "
                       "will export the final image as an 800x800 PNG.")
