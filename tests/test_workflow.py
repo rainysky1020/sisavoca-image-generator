@@ -224,9 +224,9 @@ class WorkflowTests(unittest.TestCase):
                                   find_refs, ["문"])
             self.assertEqual(lookups, [["문"]])
             self.assertEqual(result["object_reference_files"], ["older-job/door.png"])
-            self.assertEqual(client.edit_images[0], ["sheet.jpg", "object_ref_1.png",
+            self.assertEqual(client.edit_images[0], ["object_ref_1.png", "sheet.jpg",
                                                       "샘플1.jpg", "샘플2.jpg", "샘플3.jpg"])
-            self.assertEqual(client.edit_images[1], ["sheet.jpg", "draft.png", "object_ref_1.png",
+            self.assertEqual(client.edit_images[1], ["draft.png", "object_ref_1.png", "sheet.jpg",
                                                       "샘플1.jpg", "샘플2.jpg", "샘플3.jpg"])
             self.assertEqual(client.response_images["vocabulary_image_review"],
                              ["sheet.jpg", "draft.png", "object_ref_1.png",
@@ -234,8 +234,51 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(client.response_images["vocabulary_image_selection"],
                              ["sheet.jpg", "original.png", "revised.png", "object_ref_1.png",
                               "샘플1.jpg", "샘플2.jpg", "샘플3.jpg"])
-            self.assertIn("Image 2 contains the established '문' design", client.image_prompts[0])
-            self.assertIn("Image 3 contains the established '문' design", client.image_prompts[1])
+            self.assertIn("Image 1 contains the established '문' design", client.image_prompts[0])
+            self.assertIn("Image 2 contains the established '문' design", client.image_prompts[1])
+            self.assertIn("Image 2, '다람쥐 캐릭터 시트3.jpg'", client.image_prompts[0])
+            self.assertIn("Image 3, '다람쥐 캐릭터 시트3.jpg'", client.image_prompts[1])
+            self.assertIn("Do not recolor a recurring object", client.image_prompts[0])
+            self.assertIn("changed clock rim color", client.response_prompts["vocabulary_image_review"])
+
+    def test_object_only_color_change_forces_revision_and_consistent_selection(self):
+        import base64
+
+        class RecoloredClockClient(FakeClient):
+            def __init__(self):
+                super().__init__("object")
+
+            def response(self, prompt, schema_name, schema, images=None):
+                result = super().response(prompt, schema_name, schema, images)
+                data = json.loads(result["output_text"])
+                if schema_name == "vocabulary_image_plan":
+                    data["object_keys"] = ["시계"]
+                if schema_name == "vocabulary_image_selection":
+                    data["chosen_image"] = "original"
+                result["output_text"] = json.dumps(data)
+                return result
+
+            def edit_image(self, prompt, images):
+                self.edits += 1
+                self.image_prompts.append(prompt)
+                self.edit_images.append([name for name, _ in images])
+                color = "#f08020" if self.edits == 1 else "#bf815a"
+                return {"data": [{"b64_json": base64.b64encode(png(foreground=color)).decode()}]}
+
+        item = parse_csv("word,meaning_ko\nclock,시계\n".encode())[0]
+        client = RecoloredClockClient()
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:
+            root = Path(directory)
+            sheet = root / "sheet.jpg"
+            sheet.write_bytes(b"fake reference")
+            result = process_item(item, client, sheet, root, lambda _: None,
+                                  lambda keys: [("시계", "older/clock.png", png())])
+            self.assertEqual(client.edits, 2)
+            self.assertEqual(client.edit_images[0][0], "object_ref_1.png")
+            self.assertEqual(client.edit_images[1][0], "draft.png")
+            self.assertEqual(result["status"], "revised")
+            self.assertIn("기존 사물의 대표 색상이 크게 달라짐", result["review_notes"])
+            self.assertIn("기존 사물 색상 일치 후보 우선 선택", result["final_reason"])
 
     def test_filename_preserves_word_and_avoids_collisions(self):
         with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:

@@ -12,7 +12,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from collections import deque
+from collections import Counter, deque
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -25,6 +25,7 @@ TEXT_MODEL = "gpt-6-sol"
 IMAGE_MODEL = "gpt-image-2"
 IMAGE_SIZE = "1024x1024"
 DELIVERY_SIZE = (800, 800)
+OBJECT_COLOR_THRESHOLD = 64
 SAMPLE_PATHS = tuple(Path(__file__).resolve().parent / f"샘플{i}.jpg" for i in range(1, 4))
 STYLE_GUIDE = """Image 1, '다람쥐 캐릭터 시트3.jpg', is the publisher's authoritative style
 sheet. Its upper row shows the SAME squirrel from front, side and back; its lower two rows
@@ -43,7 +44,8 @@ Copy this specific visual grammar even when the scene contains no squirrel:
   Reserve tiny cyan tears or red anger/blush marks for an expression that specifically needs
   them, as shown on the sheet. Keep the squirrel's colors fixed. Give relevant props clear,
   saturated colors like the three supplied sample illustrations: bright yellow, red, blue and
-  orange where natural to the object. Avoid muddy, faded or monochrome scenes.
+  orange where natural to NEW objects. A recurring object keeps its previously delivered colors
+  exactly, even if they are less saturated than the samples. Avoid muddy, faded or monochrome scenes.
 - Squirrel anatomy: oversized sideways-up rounded ears with cream inserts; broad low rounded
   head and compact pear/bean-shaped body with no long neck; three short vertical dark forehead
   stripes; widely spaced big round white eyes with black pupils; pink horizontal oval cheeks;
@@ -344,6 +346,33 @@ def normalize_object_keys(values: object) -> list[str]:
     return keys
 
 
+def _dominant_object_color(png: bytes) -> tuple[int, int, int] | None:
+    """Find the main non-white fill in a simple object-focused illustration."""
+    with Image.open(BytesIO(png)) as source:
+        rgb = source.convert("RGB")
+        rgb.thumbnail((160, 160))
+        pixels = rgb.tobytes()
+    colors = Counter()
+    for offset in range(0, len(pixels), 3):
+        r, g, b = pixels[offset:offset + 3]
+        if min(r, g, b) >= 225 or max(r, g, b) < 70 or max(r, g, b) - min(r, g, b) < 20:
+            continue
+        colors[(r // 16 * 16, g // 16 * 16, b // 16 * 16)] += 1
+    if not colors:
+        return None
+    color, count = colors.most_common(1)[0]
+    return color if count >= (len(pixels) // 3) * .015 else None
+
+
+def _object_color_distance(reference: bytes, candidate: bytes) -> float | None:
+    """Compare the main fill of two object-only illustrations; None means inconclusive."""
+    original = _dominant_object_color(reference)
+    current = _dominant_object_color(candidate)
+    if original is None or current is None:
+        return None
+    return sum((a - b) ** 2 for a, b in zip(original, current)) ** .5
+
+
 def image_filename(word: str, output_dir: Path) -> str:
     """Preserve the original word in a portable filename and avoid overwriting duplicates."""
     stem = unicodedata.normalize("NFC", word).strip()
@@ -416,11 +445,24 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
     item["object_reference_files"] = [source for _, source, _ in prior_objects]
     object_images = [(f"object_ref_{index}.png", data)
                      for index, (_, _, data) in enumerate(prior_objects, 1)]
+    color_reference = (prior_objects[0][2] if len(prior_objects) == len(object_keys) == 1
+                       and not plan["use_squirrel"] else None)
+    source_fill = _dominant_object_color(color_reference) if color_reference else None
+    color_rule = (f"The established object's main fill is approximately "
+                  f"#{source_fill[0]:02X}{source_fill[1]:02X}{source_fill[2]:02X}. "
+                  "Keep that fill rather than choosing a sample color. " if source_fill else "")
+    generation_style = STYLE_GUIDE.replace("Image 1,", f"Image {len(object_images) + 1},", 1)
+    revision_style = STYLE_GUIDE.replace("Image 1,", f"Image {len(object_images) + 2},", 1)
     def object_instruction(start_index: int) -> str:
         if not prior_objects:
             return ""
-        return ("Earlier delivered illustrations are supplied only to match a recurring "
-                "OBJECT's silhouette, palette, outline and distinguishing details. "
+        return ("Earlier delivered illustrations are CANONICAL SOURCE ART for recurring "
+                "objects, not loose style inspiration. Reuse each named object's exact visual "
+                "design: silhouette, proportions, rim/body colors, outline weight, markings "
+                "and distinguishing details. Change only the part required by the new meaning "
+                "(for a clock, its hands' positions; keep the same rim color and width, face, "
+                "tick marks and hand design). Do not recolor a recurring object to match the "
+                "bright sample images. The samples guide NEW props and overall mood only. "
                 "Keep the new scene and meaning; do not copy an earlier composition or "
                 "character pose. " + " ".join(
                     f"Image {index + start_index} contains the established '{key}' design."
@@ -434,21 +476,24 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                  if permitted_text else
                  "No letters, words, numbers, captions, speech bubbles, or watermarks.")
     image_prompt = (f"Create a standalone vocabulary illustration on an exact pure white canvas.\n"
-                    f"{STYLE_GUIDE}\n"
+                    f"{generation_style}\n"
                     f"{character}\n{text_rule}\nScene: {plan['scene']}\n"
                     f"Mnemonic cue: {plan['memory_cue']}\nDirect visual signal: "
                     f"{plan['visual_signal']}\nTarget meaning: {item['meaning_ko']}. "
-                    f"{object_instruction(2)} "
+                    f"{object_instruction(1 if prior_objects else 2)} {color_rule} "
                     "If the scene says the squirrel points, reinterpret it as looking toward or "
                     "turning toward the target with a separate arrow or motion cue. Do not draw "
                     "an extended pointing arm, hand, index finger, or tapered finger-like tip. "
                     "One instantly readable central idea. Simplify any room or setting to a few flat "
                     "graphic props; avoid a rendered environment. Leave clear PURE WHITE (#FFFFFF) "
                     "margins; no off-white background, floor, shadow, or frame.")
-    result = client.edit_image(image_prompt, [(sheet_path.name, reference), *object_images,
+    # The first edit input is the source to preserve. The sheet and samples are style references.
+    result = client.edit_image(image_prompt, [*object_images, (sheet_path.name, reference),
                                               *style_samples])
     _add_usage(item, result)
     original = _image(result)
+    original_color_distance = (_object_color_distance(color_reference, original)
+                               if color_reference else None)
     item["status"] = "reviewing"
     save(item)
     review_prompt = ("You are selecting usable vocabulary illustrations for publication. "
@@ -467,7 +512,7 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "object must be the focal point and visibly moving down. Where a comparison "
                      "would clarify the meaning, check that it is used. Any speech bubble showing "
                      "the Korean target meaning is a material meaning-cue issue. "
-                     "Treat small palette differences, a tiny local gradient, minor texture, or a minor "
+                     "Treat small palette differences on NEW objects, a tiny local gradient, minor texture, or a minor "
                      "compositional imperfection as non-blocking. "
                      "Choose 'keep' for a usable image even when you mention minor issues. "
                      "Choose 'revise' only for a material problem: wrong or misleading meaning, "
@@ -504,7 +549,11 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "frightening emphasis beyond the reference sheet. Set meaning_cue_issue "
                      "when the planned indicator, movement or expression fails to make the Korean "
                      "meaning intuitive. Set object_consistency_issue only when a matching prior "
-                     "object reference is provided and the same object visibly changes design. "
+                     "object reference is provided and the same object visibly changes design, "
+                     "including rim/body color, outline, markings or proportions. A changed "
+                     "clock rim color is a MATERIAL mismatch even when the new color looks "
+                     "attractive or the time is correct; do not call it a minor palette difference. "
+                     "Allow only meaning-dependent changes such as clock hand positions. "
                      "These clear issues also call for one revision. The output PNG must show "
                      "the illustration on an opaque, pure white (#FFFFFF) background without a "
                      "colored panel or gradient backdrop. "
@@ -512,7 +561,7 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "only when revision is necessary, a specific fix.\n" +
                      _context(item) + f"\nPlanned scene: {plan['scene']}\nDirect visual signal: "
                      f"{plan['visual_signal']}\nSquirrel allowed: {plan['use_squirrel']}\n"
-                     f"Visible text allowed: {text_rule} " + " ".join(
+                     f"Visible text allowed: {text_rule} {color_rule}" + " ".join(
                          f"Image {index + 3} is the established '{key}' object design."
                          for index, (key, _, _) in enumerate(prior_objects)))
     selected = original
@@ -525,6 +574,9 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
         _add_usage(item, result)
         review = _text(result)
         blocking = _blocking_issues(review)
+        if original_color_distance is not None and original_color_distance > OBJECT_COLOR_THRESHOLD:
+            blocking = "; ".join(filter(None, [blocking,
+                "기존 사물의 대표 색상이 크게 달라짐 (원본 색상을 유지해야 함)"]))
     except (APIError, ValueError, KeyError, TypeError):
         item.update(status="generated", review_notes="자동 검토 실패",
                     final_reason="자동 검토를 완료하지 못해 생성 원본을 납품함")
@@ -536,11 +588,11 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
         else:
             item["status"] = "revising"
             save(item)
-            fix_prompt = (f"Revise the second input image to fix this material issue: "
+            fix_prompt = (f"Revise the FIRST input image to fix this material issue: "
                           f"{item['review_notes'] or 'material review failure'}. "
                           f"{review['fix_instruction']} Preserve the intended scene, direct visual "
                           f"signal ({plan['visual_signal']}) and vocabulary meaning. "
-                          f"The first input is the authoritative style sheet. {STYLE_GUIDE} "
+                          f"The first input is the draft to edit. {revision_style} "
                           f"Focus on the material issue instead of cosmetic restyling. If paws or feet "
                           f"are involved, redraw arms as short curved strokes with no separate hands "
                           f"and feet as two small unbroken brown ovals without digits. "
@@ -551,7 +603,7 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                           "arm entirely. Preserve the meaning with its gaze or body direction and "
                           "a separate simple arrow or target placement instead; the arm must end "
                           "as a short blunt curve attached to the torso. "
-                          f"{object_instruction(3)} "
+                          f"{object_instruction(2)} {color_rule} "
                           f"{character} {text_rule} "
                           "Use the supplied sample images for vivid prop colors and warm, lively "
                           "mood. Keep the primary object/action large and clear without losing "
@@ -562,8 +614,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                           "will export the final image as an 800x800 PNG.")
             item["revision_count"] = 1
             try:
-                result = client.edit_image(fix_prompt, [(sheet_path.name, reference),
-                                                        ("draft.png", original), *object_images,
+                result = client.edit_image(fix_prompt, [("draft.png", original), *object_images,
+                                                        (sheet_path.name, reference),
                                                         *style_samples])
                 _add_usage(item, result)
                 revised = _image(result)
@@ -582,7 +634,10 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     "a balanced composition with a large clear main subject. In a dropping scene, "
                     "prefer the version that emphasizes the falling object and downward motion. "
                     "Prefer a useful comparison when it clarifies the meaning. A Korean-meaning "
-                    "speech bubble is unacceptable. Then check prior object consistency, "
+                    "speech bubble is unacceptable. Treat a recurring object's altered color, "
+                    "border, markings or silhouette as a material mismatch; a clock may change "
+                    "hand positions but must retain its established rim and face. Then check "
+                    "prior object consistency, "
                     "complete arms and mouth, non-frightening eye proportions, fingerless "
                     "limbs, text and visual clarity. If exactly one version has a visible or "
                     "finger-like pointing hand and the other conveys the meaning without it, "
@@ -594,7 +649,7 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     "a concise reason and any remaining issues for the editor.\n" + _context(item) +
                     f"\nPlanned scene: {plan['scene']}\nMemory cue: {plan['memory_cue']}\n"
                     f"Direct visual signal: {plan['visual_signal']}\n"
-                    f"Initial review notes: {item['review_notes']} " + " ".join(
+                    f"Initial review notes: {item['review_notes']} {color_rule}" + " ".join(
                         f"Image {index + 4} is the established '{key}' object design."
                         for index, (key, _, _) in enumerate(prior_objects)))
                 try:
@@ -609,10 +664,27 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                         raise ValueError("비교 결과의 선택본이 올바르지 않습니다.")
                     original_digits = choice["original_digit_issue"]
                     revised_digits = choice["revised_digit_issue"]
+                    override_reason = ""
                     if original_digits != "none" and revised_digits == "none":
                         chosen = "revised"
+                        override_reason = "손가락 없는 후보 우선 선택"
                     elif revised_digits != "none" and original_digits == "none":
                         chosen = "original"
+                        override_reason = "손가락 없는 후보 우선 선택"
+                    if color_reference and original_digits == revised_digits:
+                        revised_color_distance = _object_color_distance(color_reference, revised)
+                        if original_color_distance is not None and revised_color_distance is not None:
+                            if original_color_distance > OBJECT_COLOR_THRESHOLD >= revised_color_distance:
+                                chosen = "revised"
+                                override_reason = "기존 사물 색상 일치 후보 우선 선택"
+                            elif revised_color_distance > OBJECT_COLOR_THRESHOLD >= original_color_distance:
+                                chosen = "original"
+                                override_reason = "기존 사물 색상 일치 후보 우선 선택"
+                            elif (original_color_distance > OBJECT_COLOR_THRESHOLD and
+                                  revised_color_distance > OBJECT_COLOR_THRESHOLD):
+                                chosen = ("original" if original_color_distance <= revised_color_distance
+                                          else "revised")
+                                override_reason = "기존 사물 색상 차이가 더 작은 후보 선택"
                 except (APIError, ValueError, KeyError, TypeError):
                     item.update(status="generated", final_reason="원본·수정본 비교에 실패해 원본을 납품함")
                     item["review_notes"] += "; 최종 비교 실패"
@@ -622,13 +694,17 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     item["status"] = "revised" if chosen == "revised" else "generated"
                     if chosen != choice["chosen_image"]:
                         item["final_reason"] = (
-                            f"원본·수정본 비교 후 {item['selected_version']} 선택: "
-                            "손가락 없는 후보 우선 선택; 비교 모델 의견: " + choice["reason"])
+                            f"원본·수정본 비교 후 {item['selected_version']} 선택: " +
+                            override_reason + "; 비교 모델 의견: " + choice["reason"])
                     else:
                         item["final_reason"] = (f"원본·수정본 비교 후 {item['selected_version']} 선택: "
                                                 f"{choice['reason']}")
                     if choice["remaining_issues"]:
                         item["review_notes"] += "; 선택본 참고 사항: " + choice["remaining_issues"]
+                    if color_reference:
+                        final_distance = _object_color_distance(color_reference, selected)
+                        if final_distance is not None and final_distance > OBJECT_COLOR_THRESHOLD:
+                            item["review_notes"] += "; 선택본의 기존 사물 대표 색상이 여전히 다름"
     filename = image_filename(item["word"], output_dir)
     path = output_dir / filename
     path.write_bytes(selected)
