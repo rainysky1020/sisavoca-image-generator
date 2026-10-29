@@ -25,7 +25,8 @@ TEXT_MODEL = "gpt-6-sol"
 IMAGE_MODEL = "gpt-image-2"
 IMAGE_SIZE = "1024x1024"
 DELIVERY_SIZE = (800, 800)
-STYLE_GUIDE = """Image 1, '다람쥐 캐릭터 시트2.jpg', is the publisher's authoritative NEW style
+SAMPLE_PATHS = tuple(Path(__file__).resolve().parent / f"샘플{i}.jpg" for i in range(1, 4))
+STYLE_GUIDE = """Image 1, '다람쥐 캐릭터 시트3.jpg', is the publisher's authoritative style
 sheet. Its upper row shows the SAME squirrel from front, side and back; its lower two rows
 are expression studies of that same face. They are views, NOT multiple characters to draw.
 Copy this specific visual grammar even when the scene contains no squirrel:
@@ -35,12 +36,14 @@ Copy this specific visual grammar even when the scene contains no squirrel:
   outlines (approximately #5C472A), rounded stroke ends and corners, and flat opaque fills.
   Use roughly consistent outline weight on the squirrel and props. No black outer outline,
   gradients, texture, broad shading, 3D perspective or realistic lighting.
-- Reference palette: light golden-tan body about #E7BD83, pale cream inner ears about
-  #F3E1B3, medium brown tail and oval feet about #B88C5F, dark brown markings and tail curl
-  about #7F613B, soft coral-pink oval cheeks about #FF9F98, black eyes/nose/mouth and white
+- Reference palette from sheet 3: vivid golden-orange body about #F8BB68, warm cream inner ears
+  about #FFE29E, rich brown tail and oval feet about #C3874B, dark warm-brown outlines and
+  markings, clear coral-pink oval cheeks about #FF8F87, black eyes/nose/mouth and white
   eye whites. These are guides from the JPEG; match the visible sheet over exact hex codes.
   Reserve tiny cyan tears or red anger/blush marks for an expression that specifically needs
-  them, as shown on the sheet. Do not recolor the squirrel or add decorative bright colors.
+  them, as shown on the sheet. Keep the squirrel's colors fixed. Give relevant props clear,
+  saturated colors like the three supplied sample illustrations: bright yellow, red, blue and
+  orange where natural to the object. Avoid muddy, faded or monochrome scenes.
 - Squirrel anatomy: oversized sideways-up rounded ears with cream inserts; broad low rounded
   head and compact pear/bean-shaped body with no long neck; three short vertical dark forehead
   stripes; widely spaced big round white eyes with black pupils; pink horizontal oval cheeks;
@@ -77,8 +80,17 @@ clear visual hierarchy and generous white space. Make it gender-neutral and broa
 no frills, florals, lace, hearts, sparkles, cosmetic accents, powdery pastel wash or overly
 sweet feminine coding. Avoid sepia, antique paper, vintage storybook, watercolor, rustic
 craft, old textbook clip art and decorative clutter. Modernity must not restyle the squirrel.
+Make the overall mood warm, lively and positive while preserving any emotion required by the
+meaning. Enlarge and sharpen the PRIMARY object or action as much as the composition allows
+without losing balance. When the meaning is '떨어뜨리다' or dropping something, the falling
+OBJECT must be the largest, clearest focal element; show its separation and downward motion,
+with the actor secondary. Use a simple before/after or side-by-side comparison when it makes
+the meaning easier to grasp. No speech bubble containing the Korean target meaning; preferably
+no speech bubbles at all. The three sample illustrations are color and mood references only:
+do not copy their scenes, props or poses unless the vocabulary calls for them.
 If no actor is needed, draw only
-objects/symbols with the SAME round brown-outlined flat visual grammar and palette; do not
+objects/symbols with the SAME round brown-outlined flat visual grammar and vivid, relevant
+sample-like prop colors; do not
 invent another character or put faces on objects.
 """
 
@@ -356,6 +368,7 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                  known_object_keys: list[str] | None = None) -> dict:
     """Process one row; save is called after every irreversible API result."""
     reference = sheet_path.read_bytes()
+    style_samples = [(path.name, path.read_bytes()) for path in SAMPLE_PATHS]
     item["status"] = "planning"
     save(item)
     prompt = ("You are an expert vocabulary editor. BEFORE any image is made, design one "
@@ -366,7 +379,13 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
               "so make the scene and mnemonic cue specific enough at this planning stage. "
               "Use a squirrel only when a visible actor, action, expression, or emotion is needed; "
               "otherwise use objects or symbols with no animal. Prefer no letters or numbers; "
-              "permit only if essential to the mnemonic. Specify a DIRECT visual_signal: a "
+              "permit only if essential to the mnemonic. Never place the Korean target meaning "
+              "in a speech bubble; prefer no speech bubbles at all. Use vivid sample-like prop "
+              "colors and a warm, lively, positive mood. Make the primary object or action large "
+              "and unmistakable while keeping the composition balanced. For '떨어뜨리다' or any "
+              "dropping scene, emphasize the falling object over the actor, with visible downward "
+              "motion. Use a simple visual comparison when it communicates the meaning better. "
+              "Specify a DIRECT visual_signal: a "
               "recognizable indicator, motion, relationship, or sheet-style facial expression "
               "that makes the Korean meaning obvious without text. If the meaning or scene involves "
               "pointing or indicating, NEVER plan an index-finger or hand-pointing pose. Instead "
@@ -410,7 +429,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                  "Use its front/side/back views for anatomy and its face studies only for expression. "
                  "No other faces, animals, mascots, or anthropomorphic objects."
                  if plan["use_squirrel"] else "No squirrel, no animals, no anthropomorphic actor.")
-    text_rule = (f"Only visible text allowed: {permitted_text}. Keep it exact and minimal."
+    text_rule = (f"Only visible text allowed: {permitted_text}. Keep it exact and minimal. "
+                 "Never put the Korean target meaning in a speech bubble; use no speech bubbles."
                  if permitted_text else
                  "No letters, words, numbers, captions, speech bubbles, or watermarks.")
     image_prompt = (f"Create a standalone vocabulary illustration on an exact pure white canvas.\n"
@@ -425,7 +445,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     "One instantly readable central idea. Simplify any room or setting to a few flat "
                     "graphic props; avoid a rendered environment. Leave clear PURE WHITE (#FFFFFF) "
                     "margins; no off-white background, floor, shadow, or frame.")
-    result = client.edit_image(image_prompt, [(sheet_path.name, reference), *object_images])
+    result = client.edit_image(image_prompt, [(sheet_path.name, reference), *object_images,
+                                              *style_samples])
     _add_usage(item, result)
     original = _image(result)
     item["status"] = "reviewing"
@@ -433,13 +454,19 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
     review_prompt = ("You are selecting usable vocabulary illustrations for publication. "
                      "Favor keeping an image when its Korean meaning is recognizable at mobile size "
                      "and it serves as a useful memory cue. Assess the reference sheet's overall "
-                     "specific NEW multi-view sheet: warm-brown outlines, flat golden-tan body, "
+                     "specific multi-view sheet 3: warm-brown outlines, flat vivid golden-orange body, "
                      "cream ear inserts, single curled brown tail, coral oval cheeks, and sparse "
                      "rounded props. The bottom rows are expression studies, not extra characters. "
                      "Keep a current 2026 mobile-illustration composition with clear hierarchy, "
                      "crisp flat forms and useful asymmetry. Flag material vintage/sepia treatment "
                      "or strong frilly/floral, powder-pastel, gender-coded decoration; the mascot "
                      "itself must still match the supplied sheet. "
+                     "The last three images are sample color/mood references. Check for vivid "
+                     "relevant prop colors, a warm lively positive overall mood, and a large clear "
+                     "primary subject without harming balance. For dropping scenes, the falling "
+                     "object must be the focal point and visibly moving down. Where a comparison "
+                     "would clarify the meaning, check that it is used. Any speech bubble showing "
+                     "the Korean target meaning is a material meaning-cue issue. "
                      "Treat small palette differences, a tiny local gradient, minor texture, or a minor "
                      "compositional imperfection as non-blocking. "
                      "Choose 'keep' for a usable image even when you mention minor issues. "
@@ -448,7 +475,7 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "materially breaks the sheet's style, unwanted prominent text, or a changed "
                      "squirrel design. Set style_issue to 'material' when central shapes show obvious "
                      "3D shading or broad gradients, the scene looks vintage, or several bright "
-                     "accent colors overwhelm the reference palette; use 'minor' only for tiny "
+                     "accent colors are unrelated or overwhelm the scene; use 'minor' only for tiny "
                      "local deviations. Set extra_character when another animal, mascot, human, "
                      "or face on a toy or object appears. Inspect EVERY visible squirrel paw and "
                      "foot closely, including "
@@ -493,7 +520,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
     try:
         result = client.response(review_prompt + "\nImage 1 is the reference sheet; image 2 is the draft to judge.",
                                  "vocabulary_image_review", REVIEW_SCHEMA,
-                                 [(sheet_path.name, reference), ("draft.png", original), *object_images])
+                                 [(sheet_path.name, reference), ("draft.png", original),
+                                  *object_images, *style_samples])
         _add_usage(item, result)
         review = _text(result)
         blocking = _blocking_issues(review)
@@ -525,12 +553,18 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                           "as a short blunt curve attached to the torso. "
                           f"{object_instruction(3)} "
                           f"{character} {text_rule} "
+                          "Use the supplied sample images for vivid prop colors and warm, lively "
+                          "mood. Keep the primary object/action large and clear without losing "
+                          "balance. If something is dropped, make the falling object the focal "
+                          "point, with clear downward motion. Use a comparison when it clarifies "
+                          "the target meaning. "
                           "Pure white (#FFFFFF) opaque background with clear margins. The application "
                           "will export the final image as an 800x800 PNG.")
             item["revision_count"] = 1
             try:
                 result = client.edit_image(fix_prompt, [(sheet_path.name, reference),
-                                                        ("draft.png", original), *object_images])
+                                                        ("draft.png", original), *object_images,
+                                                        *style_samples])
                 _add_usage(item, result)
                 revised = _image(result)
             except (APIError, ValueError, KeyError, TypeError):
@@ -543,8 +577,13 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     "Choose exactly ONE of the two completed vocabulary illustrations for delivery. "
                     "Image 1 is the authoritative squirrel style sheet; image 2 is ORIGINAL; "
                     "image 3 is REVISED. Compare images 2 and 3 for the specified Korean meaning "
-                    "and direct visual signal FIRST, then current gender-neutral style, prior object "
-                    "consistency, complete arms and mouth, non-frightening eye proportions, fingerless "
+                    "and direct visual signal FIRST. Then consider current gender-neutral style "
+                    "and the last three sample images' vivid color and warm, lively mood. Prefer "
+                    "a balanced composition with a large clear main subject. In a dropping scene, "
+                    "prefer the version that emphasizes the falling object and downward motion. "
+                    "Prefer a useful comparison when it clarifies the meaning. A Korean-meaning "
+                    "speech bubble is unacceptable. Then check prior object consistency, "
+                    "complete arms and mouth, non-frightening eye proportions, fingerless "
                     "limbs, text and visual clarity. If exactly one version has a visible or "
                     "finger-like pointing hand and the other conveys the meaning without it, "
                     "choose the fingerless version. Independently report digit_issue for BOTH "
@@ -561,7 +600,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                 try:
                     result = client.response(selection_prompt, "vocabulary_image_selection", SELECTION_SCHEMA,
                                              [(sheet_path.name, reference), ("original.png", original),
-                                              ("revised.png", revised), *object_images])
+                                              ("revised.png", revised), *object_images,
+                                              *style_samples])
                     _add_usage(item, result)
                     choice = _text(result)
                     chosen = choice["chosen_image"]

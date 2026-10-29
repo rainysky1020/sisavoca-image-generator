@@ -23,7 +23,7 @@ from report_xlsx import write_report
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "output"
 DB_PATH = OUTPUT / "jobs.db"
-SHEET = ROOT / "다람쥐 캐릭터 시트2.jpg"
+SHEET = ROOT / "다람쥐 캐릭터 시트3.jpg"
 STATIC = ROOT / "static"
 MAX_UPLOAD = 5 * 1024 * 1024
 MAX_ROWS = 1000

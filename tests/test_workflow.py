@@ -124,7 +124,8 @@ class WorkflowTests(unittest.TestCase):
                     expected = (100, 62, 156) if result["status"] == "revised" else (191, 129, 90)
                     self.assertEqual(delivered.getpixel((300, 300)), expected)
             if mode in ("fix", "discard", "choose_original"):
-                self.assertEqual(client.selection_images, ["sheet.jpg", "original.png", "revised.png"])
+                self.assertEqual(client.selection_images, ["sheet.jpg", "original.png", "revised.png",
+                                                           "샘플1.jpg", "샘플2.jpg", "샘플3.jpg"])
             return result.copy()
 
     def test_decisions_and_single_revision(self):
@@ -172,6 +173,31 @@ class WorkflowTests(unittest.TestCase):
                           client.response_prompts["vocabulary_image_selection"])
             self.assertIn("손가락 없는 후보 우선 선택", result["final_reason"])
 
+    def test_sheet3_and_new_visual_rules_reach_every_stage(self):
+        import app
+        self.assertEqual(app.SHEET.name, "다람쥐 캐릭터 시트3.jpg")
+        item = parse_csv("word,meaning_ko\ndrop,떨어뜨리다\n".encode())[0]
+        client = FakeClient("fix")
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:
+            root = Path(directory)
+            sheet = root / "다람쥐 캐릭터 시트3.jpg"
+            sheet.write_bytes(b"fake reference")
+            process_item(item, client, sheet, root, lambda _: None)
+            plan = client.response_prompts["vocabulary_image_plan"]
+            self.assertIn("emphasize the falling object over the actor", plan)
+            self.assertIn("simple visual comparison", plan)
+            self.assertIn("Never place the Korean target meaning", plan)
+            for image_prompt in client.image_prompts:
+                self.assertIn("falling", image_prompt)
+                self.assertIn("speech bubbles", image_prompt)
+                self.assertIn("warm", image_prompt)
+            review = client.response_prompts["vocabulary_image_review"]
+            selection = client.response_prompts["vocabulary_image_selection"]
+            self.assertIn("falling object must be the focal point", review)
+            self.assertIn("Korean target meaning", review)
+            self.assertIn("falling object", selection)
+            self.assertIn("Korean-meaning speech bubble", selection)
+
     def test_object_and_text_rules(self):
         for mode, expected in (("object", "No squirrel"), ("text", "Only visible text allowed: A")):
             item = parse_csv("word,meaning_ko\napple,사과\n".encode())[0]
@@ -198,12 +224,16 @@ class WorkflowTests(unittest.TestCase):
                                   find_refs, ["문"])
             self.assertEqual(lookups, [["문"]])
             self.assertEqual(result["object_reference_files"], ["older-job/door.png"])
-            self.assertEqual(client.edit_images[0], ["sheet.jpg", "object_ref_1.png"])
-            self.assertEqual(client.edit_images[1], ["sheet.jpg", "draft.png", "object_ref_1.png"])
+            self.assertEqual(client.edit_images[0], ["sheet.jpg", "object_ref_1.png",
+                                                      "샘플1.jpg", "샘플2.jpg", "샘플3.jpg"])
+            self.assertEqual(client.edit_images[1], ["sheet.jpg", "draft.png", "object_ref_1.png",
+                                                      "샘플1.jpg", "샘플2.jpg", "샘플3.jpg"])
             self.assertEqual(client.response_images["vocabulary_image_review"],
-                             ["sheet.jpg", "draft.png", "object_ref_1.png"])
+                             ["sheet.jpg", "draft.png", "object_ref_1.png",
+                              "샘플1.jpg", "샘플2.jpg", "샘플3.jpg"])
             self.assertEqual(client.response_images["vocabulary_image_selection"],
-                             ["sheet.jpg", "original.png", "revised.png", "object_ref_1.png"])
+                             ["sheet.jpg", "original.png", "revised.png", "object_ref_1.png",
+                              "샘플1.jpg", "샘플2.jpg", "샘플3.jpg"])
             self.assertIn("Image 2 contains the established '문' design", client.image_prompts[0])
             self.assertIn("Image 3 contains the established '문' design", client.image_prompts[1])
 
