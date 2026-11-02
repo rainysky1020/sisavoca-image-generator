@@ -39,11 +39,15 @@ class FakeClient:
     def response(self, prompt, schema_name, schema, images=None):
         self.response_prompts[schema_name] = prompt
         self.response_images[schema_name] = [name for name, _ in images or []]
-        if schema_name == "vocabulary_image_plan":
+        if schema_name == "vocabulary_hangul_check":
+            content = {"hangul_visible": self.mode in ("hangul_once", "hangul_persist")
+                       and (self.edits == 1 or self.mode == "hangul_persist")}
+        elif schema_name == "vocabulary_image_plan":
             content = {"draw": self.mode != "skip", "reason": "연상에 도움" if self.mode != "skip" else "시각화 이득 없음",
                        "scene": "문 앞에서 망설이는 모습", "memory_cue": "멈춘 동작",
                        "use_squirrel": self.mode not in ("object", "text"),
-                       "use_text": self.mode == "text", "allowed_text": "A" if self.mode == "text" else "",
+                       "use_text": self.mode in ("text", "hangul_plan"),
+                       "allowed_text": "한글" if self.mode == "hangul_plan" else ("A" if self.mode == "text" else ""),
                        "visual_signal": "멈춘 자세", "object_keys": ["문"]}
         elif schema_name == "vocabulary_image_selection":
             if self.mode == "selection_error":
@@ -57,7 +61,8 @@ class FakeClient:
             if self.mode == "review_error":
                 raise APIError("review unavailable")
             self.reviews += 1
-            passing = self.mode in ("pass", "minor", "object", "text", "digit_override",
+            passing = self.mode in ("pass", "minor", "object", "text", "hangul_plan",
+                                    "hangul_once", "hangul_persist", "digit_override",
                                     "digit_persist", "character_override", "style_override",
                                     "extra_character_override") or (self.mode == "fix" and self.reviews == 2)
             digit_issue = ("visible" if self.mode == "digit_persist" or
@@ -186,7 +191,7 @@ class WorkflowTests(unittest.TestCase):
             plan = client.response_prompts["vocabulary_image_plan"]
             self.assertIn("emphasize the falling object over the actor", plan)
             self.assertIn("simple visual comparison", plan)
-            self.assertIn("Never place the Korean target meaning", plan)
+            self.assertIn("NEVER plan visible Korean/Hangul text anywhere", plan)
             for image_prompt in client.image_prompts:
                 self.assertIn("falling", image_prompt)
                 self.assertIn("speech bubbles", image_prompt)
@@ -208,6 +213,24 @@ class WorkflowTests(unittest.TestCase):
                 sheet.write_bytes(b"fake reference")
                 process_item(item, client, sheet, root, lambda _: None)
                 self.assertIn(expected, client.image_prompts[0])
+
+    def test_hangul_is_removed_or_delivery_fails(self):
+        for mode in ("hangul_plan", "hangul_once", "hangul_persist"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(dir=TEST_TEMP) as directory:
+                root = Path(directory)
+                sheet = root / "sheet.jpg"
+                sheet.write_bytes(b"fake reference")
+                item = parse_csv("word,meaning_ko\napple,사과\n".encode())[0]
+                client = FakeClient(mode)
+                if mode == "hangul_persist":
+                    with self.assertRaisesRegex(APIError, "한글이 남아"):
+                        process_item(item, client, sheet, root, lambda _: None)
+                    self.assertFalse(list(root.glob("*.png")))
+                else:
+                    result = process_item(item, client, sheet, root, lambda _: None)
+                    self.assertEqual(client.edits, 2 if mode == "hangul_once" else 1)
+                    self.assertEqual(result["use_text"], False)
+                    self.assertIn("No Korean or Hangul characters anywhere", client.image_prompts[0])
 
     def test_reuses_prior_object_in_generation_revision_and_review(self):
         item = parse_csv("word,meaning_ko\nhesitate,망설이다\n".encode())[0]

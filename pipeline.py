@@ -208,6 +208,11 @@ SELECTION_SCHEMA = {
     "required": ["chosen_image", "reason", "remaining_issues",
                  "original_digit_issue", "revised_digit_issue"],
 }
+HANGUL_CHECK_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"hangul_visible": {"type": "boolean"}},
+    "required": ["hangul_visible"],
+}
 
 
 def _blocking_issues(review: dict) -> str:
@@ -408,8 +413,9 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
               "so make the scene and mnemonic cue specific enough at this planning stage. "
               "Use a squirrel only when a visible actor, action, expression, or emotion is needed; "
               "otherwise use objects or symbols with no animal. Prefer no letters or numbers; "
-              "permit only if essential to the mnemonic. Never place the Korean target meaning "
-              "in a speech bubble; prefer no speech bubbles at all. Use vivid sample-like prop "
+              "permit only if essential to the mnemonic. NEVER plan visible Korean/Hangul text "
+              "anywhere in the image, including signs, labels, props and speech bubbles. "
+              "Prefer no speech bubbles at all. Use vivid sample-like prop "
               "colors and a warm, lively, positive mood. Make the primary object or action large "
               "and unmistakable while keeping the composition balanced. For '떨어뜨리다' or any "
               "dropping scene, emphasize the falling object over the actor, with visible downward "
@@ -430,6 +436,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
     _add_usage(item, result)
     plan = _text(result)
     permitted_text = str(plan["allowed_text"]).strip() if plan["use_text"] else ""
+    if re.search(r"[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7ff]", permitted_text):
+        permitted_text = ""
     object_keys = normalize_object_keys(plan["object_keys"])
     item.update(decision_reason=plan["reason"], scene=plan["scene"],
                 memory_cue=plan["memory_cue"], use_squirrel=bool(plan["use_squirrel"]),
@@ -472,9 +480,11 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                  "No other faces, animals, mascots, or anthropomorphic objects."
                  if plan["use_squirrel"] else "No squirrel, no animals, no anthropomorphic actor.")
     text_rule = (f"Only visible text allowed: {permitted_text}. Keep it exact and minimal. "
-                 "Never put the Korean target meaning in a speech bubble; use no speech bubbles."
+                 "No Korean or Hangul characters anywhere, even on signs or props. "
+                 "Use no speech bubbles."
                  if permitted_text else
-                 "No letters, words, numbers, captions, speech bubbles, or watermarks.")
+                 "No letters, words, numbers, captions, speech bubbles, or watermarks. "
+                 "No Korean or Hangul characters anywhere, even on signs or props.")
     image_prompt = (f"Create a standalone vocabulary illustration on an exact pure white canvas.\n"
                     f"{generation_style}\n"
                     f"{character}\n{text_rule}\nScene: {plan['scene']}\n"
@@ -511,7 +521,9 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                      "primary subject without harming balance. For dropping scenes, the falling "
                      "object must be the focal point and visibly moving down. Where a comparison "
                      "would clarify the meaning, check that it is used. Any speech bubble showing "
-                     "the Korean target meaning is a material meaning-cue issue. "
+                     "the Korean target meaning is a material meaning-cue issue. ANY visible "
+                     "Korean/Hangul writing anywhere in the draft is a material issue requiring "
+                     "revision, including on signs, labels, props or the background. "
                      "Treat small palette differences on NEW objects, a tiny local gradient, minor texture, or a minor "
                      "compositional imperfection as non-blocking. "
                      "Choose 'keep' for a usable image even when you mention minor issues. "
@@ -565,6 +577,7 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                          f"Image {index + 3} is the established '{key}' object design."
                          for index, (key, _, _) in enumerate(prior_objects)))
     selected = original
+    revised = None
     item["selected_version"] = "원본"
     try:
         result = client.response(review_prompt + "\nImage 1 is the reference sheet; image 2 is the draft to judge.",
@@ -634,7 +647,8 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                     "a balanced composition with a large clear main subject. In a dropping scene, "
                     "prefer the version that emphasizes the falling object and downward motion. "
                     "Prefer a useful comparison when it clarifies the meaning. A Korean-meaning "
-                    "speech bubble is unacceptable. Treat a recurring object's altered color, "
+                    "speech bubble is unacceptable. Inspect both candidates for ANY Korean/Hangul "
+                    "writing and choose a candidate without it whenever one exists. Treat a recurring object's altered color, "
                     "border, markings or silhouette as a material mismatch; a clock may change "
                     "hand positions but must retain its established rim and face. Then check "
                     "prior object consistency, "
@@ -705,6 +719,53 @@ def process_item(item: dict, client: OpenAIClient, sheet_path: Path, output_dir:
                         final_distance = _object_color_distance(color_reference, selected)
                         if final_distance is not None and final_distance > OBJECT_COLOR_THRESHOLD:
                             item["review_notes"] += "; 선택본의 기존 사물 대표 색상이 여전히 다름"
+    def has_hangul(image: bytes) -> bool:
+        check = client.response(
+            "Inspect ONLY the supplied illustration, including every sign, label, prop, "
+            "background mark and speech bubble. Is ANY visible Korean Hangul writing present? "
+            "Count even a single Hangul syllable or jamo. Ignore the vocabulary meaning and "
+            "any text outside the image. Return hangul_visible=true if present or uncertain.",
+            "vocabulary_hangul_check", HANGUL_CHECK_SCHEMA, [("candidate.png", image)])
+        _add_usage(item, check)
+        return _text(check)["hangul_visible"]
+
+    try:
+        hangul_visible = has_hangul(selected)
+    except (APIError, ValueError, KeyError, TypeError) as exc:
+        raise APIError("한글 포함 여부를 확인하지 못해 이미지를 납품하지 않음") from exc
+    if hangul_visible and revised is not None:
+        alternate = original if selected is revised else revised
+        try:
+            alternate_has_hangul = has_hangul(alternate)
+        except (APIError, ValueError, KeyError, TypeError) as exc:
+            raise APIError("다른 후보의 한글 포함 여부를 확인하지 못해 이미지를 납품하지 않음") from exc
+        if not alternate_has_hangul:
+            selected = alternate
+            item["selected_version"] = "원본" if selected is original else "수정본"
+            item["status"] = "generated" if selected is original else "revised"
+            item["final_reason"] = "한글이 없는 후보를 우선 선택"
+            hangul_visible = False
+    if hangul_visible and not item["revision_count"]:
+        item["status"] = "revising"
+        item["revision_count"] = 1
+        save(item)
+        result = client.edit_image(
+            "Revise the FIRST image: remove EVERY visible Korean/Hangul character, including "
+            "text on signs, labels, objects and speech bubbles. Replace the writing with plain "
+            "unmarked surfaces. Preserve the scene, style, colors and meaning. " + text_rule,
+            [("draft.png", selected)])
+        _add_usage(item, result)
+        selected = _image(result)
+        item["selected_version"] = "수정본"
+        item["status"] = "revised"
+        item["final_reason"] = "그림에 나타난 한글을 제거한 수정본 선택"
+        try:
+            hangul_visible = has_hangul(selected)
+        except (APIError, ValueError, KeyError, TypeError) as exc:
+            raise APIError("수정본의 한글 포함 여부를 확인하지 못해 이미지를 납품하지 않음") from exc
+    if hangul_visible:
+        raise APIError("그림에 한글이 남아 있어 이미지를 납품하지 않음")
+
     filename = image_filename(item["word"], output_dir)
     path = output_dir / filename
     path.write_bytes(selected)
